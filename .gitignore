@@ -1,0 +1,5 @@
+data/*
+output/*
+*/output/*
+*/svr_models_comparison/*
+src/__pycache__/*
