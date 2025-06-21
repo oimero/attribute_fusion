@@ -340,6 +340,7 @@ def filter_anomalous_attributes(
 
             plt.tight_layout()
             plt.savefig(os.path.join(output_dir, "anomalous_attributes.png"), dpi=300, bbox_inches="tight")
+            plt.show()
             plt.close()
 
         # 创建属性质量评分图表
@@ -372,6 +373,7 @@ def filter_anomalous_attributes(
         plt.title("属性质量评分 (越高越好)")
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, "attribute_quality_scores.png"), dpi=300, bbox_inches="tight")
+        plt.show()
         plt.close()
 
     return good_attrs, anomalous_attrs, comparison_df
