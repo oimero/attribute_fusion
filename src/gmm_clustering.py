@@ -40,9 +40,7 @@ def evaluate_gmm_clusters(features_pca, max_clusters=10, output_dir="output"):
         models.append(gmm)
         bic_scores.append(gmm.bic(features_pca))
         aic_scores.append(gmm.aic(features_pca))
-        print(
-            f"聚类数量 {n_comp}: BIC = {bic_scores[-1]:.2f}, AIC = {aic_scores[-1]:.2f}"
-        )
+        print(f"聚类数量 {n_comp}: BIC = {bic_scores[-1]:.2f}, AIC = {aic_scores[-1]:.2f}")
 
     # 绘制BIC和AIC曲线
     plt.figure(figsize=(12, 6))
@@ -76,9 +74,7 @@ def evaluate_gmm_clusters(features_pca, max_clusters=10, output_dir="output"):
     plt.legend()
 
     plt.tight_layout()
-    plt.savefig(
-        os.path.join(output_dir, "gmm_bic_aic.png"), dpi=300, bbox_inches="tight"
-    )
+    plt.savefig(os.path.join(output_dir, "gmm_bic_aic.png"), dpi=300, bbox_inches="tight")
     plt.show()
 
     # 计算BIC和AIC的变化率
@@ -127,9 +123,7 @@ def evaluate_gmm_clusters(features_pca, max_clusters=10, output_dir="output"):
     }
 
 
-def perform_gmm_clustering(
-    features_pca, coords, n_clusters, output_dir="output", random_state=42, prefix=""
-):
+def perform_gmm_clustering(features_pca, coords, n_clusters, output_dir="output", random_state=42, prefix=""):
     """
     执行指定聚类数的GMM聚类并可视化结果
 
@@ -170,22 +164,48 @@ def perform_gmm_clustering(
     )
 
     # 文件名前缀
-    file_prefix = (
-        f"{prefix}_{n_clusters}_clusters_" if prefix else f"{n_clusters}_clusters_"
-    )
+    file_prefix = f"{prefix}_{n_clusters}_clusters_" if prefix else f"{n_clusters}_clusters_"
+
+    # 创建颜色映射，确保聚类颜色清晰区分
+    unique_clusters = sorted(np.unique(cluster_labels))
+    colors = plt.cm.viridis(np.linspace(0, 1, n_clusters))
+    cluster_colors = {cluster: colors[i] for i, cluster in enumerate(unique_clusters)}
 
     # 可视化1: 空间分布
     plt.figure(figsize=(12, 10))
+
+    # 创建散点图 - 保持原始绘图方式
     scatter = plt.scatter(
         result_df["X"],
         result_df["Y"],
-        c=result_df["Cluster"],
+        c=cluster_labels,
         cmap="viridis",
         s=30,
         alpha=0.8,
         linewidths=0.5,
     )
-    plt.colorbar(scatter, label="聚类")
+
+    # 添加图例，而不是颜色条
+    legend1 = plt.legend(
+        handles=[
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor=scatter.cmap(scatter.norm(c)),
+                markersize=10,
+                label=f"聚类 {c}",
+            )
+            for c in unique_clusters
+        ],
+        title="聚类标签",
+        loc="best",
+    )
+    plt.gca().add_artist(legend1)
+
+    # 不添加颜色条 (删除 plt.colorbar() 调用)
+
     plt.title(f"样本点的聚类分布 (聚类数={n_clusters})")
     plt.xlabel("X坐标")
     plt.ylabel("Y坐标")
@@ -199,18 +219,23 @@ def perform_gmm_clustering(
     # 可视化2: PCA投影
     if features_pca.shape[1] >= 2:
         plt.figure(figsize=(10, 8))
-        scatter = plt.scatter(
-            features_pca[:, 0],
-            features_pca[:, 1],
-            c=cluster_labels,
-            cmap="viridis",
-            s=30,
-            alpha=0.7,
-        )
-        plt.colorbar(scatter, label="聚类")
+
+        # 为每个聚类单独绘制散点图
+        for cluster in unique_clusters:
+            mask = cluster_labels == cluster
+            plt.scatter(
+                features_pca[mask, 0],
+                features_pca[mask, 1],
+                c=[cluster_colors[cluster]],
+                label=f"聚类 {cluster}",
+                s=30,
+                alpha=0.7,
+            )
+
         plt.title(f"PCA投影下的聚类分布 (聚类数={n_clusters})")
         plt.xlabel("主成分1")
         plt.ylabel("主成分2")
+        plt.legend(loc="best")  # 在图的角落添加图例
         plt.savefig(
             os.path.join(output_dir, f"{file_prefix}gmm_pca_projection.png"),
             dpi=300,
@@ -384,14 +409,10 @@ def augment_samples_by_pca_mixing(
             mean_weight = np.random.uniform(mean_weight_range[0], mean_weight_range[1])
 
             # 在PCA空间中混合生成新样本
-            pca_new_sample = (
-                mean_weight * pca_cluster_mean + (1 - mean_weight) * pca_orig_sample
-            )
+            pca_new_sample = mean_weight * pca_cluster_mean + (1 - mean_weight) * pca_orig_sample
 
             # 反投影回原始空间
-            new_sample_scaled = pca_model.inverse_transform(
-                pca_new_sample.reshape(1, -1)
-            )
+            new_sample_scaled = pca_model.inverse_transform(pca_new_sample.reshape(1, -1))
             new_sample_orig = scaler.inverse_transform(new_sample_scaled).flatten()
 
             # 生成一个新的目标值，略微偏离原始样本的目标值
@@ -401,11 +422,7 @@ def augment_samples_by_pca_mixing(
 
             # 确保混合的目标值与原样本和聚类均值之间具有相似的关系
             target_weight = mean_weight  # 可以使用与特征相同的权重，或单独设置
-            new_target_value = (
-                target_weight * target_mean
-                + (1 - target_weight) * orig_target
-                + new_target_delta
-            )
+            new_target_value = target_weight * target_mean + (1 - target_weight) * orig_target + new_target_delta
 
             # 确保目标值非负（如果是砂厚等物理量）
             new_target_value = max(0, new_target_value)
@@ -431,9 +448,7 @@ def augment_samples_by_pca_mixing(
         augmented_data = pd.concat([well_data, synthetic_df], ignore_index=True)
 
         if verbose:
-            print(
-                f"\n扩增后的样本数: {len(augmented_data)} (原始: {len(well_data)}, 合成: {len(synthetic_df)})"
-            )
+            print(f"\n扩增后的样本数: {len(augmented_data)} (原始: {len(well_data)}, 合成: {len(synthetic_df)})")
             print(f"扩增比例: {len(augmented_data) / len(well_data):.2f}倍")
     else:
         well_data["Is_Synthetic"] = 0
@@ -444,9 +459,7 @@ def augment_samples_by_pca_mixing(
     return augmented_data
 
 
-def encode_cluster_features(
-    data, cluster_column="Cluster", drop_original=True, prefix="Cluster_"
-):
+def encode_cluster_features(data, cluster_column="Cluster", drop_original=True, prefix="Cluster_"):
     """
     对数据中的聚类标签进行One-Hot编码，并将编码后的特征添加到原始数据中
 
@@ -468,9 +481,7 @@ def encode_cluster_features(
     # 获取唯一的聚类标签
     unique_clusters = sorted(result_df[cluster_column].unique())
 
-    print(
-        f"对'{cluster_column}'列进行One-Hot编码，发现{len(unique_clusters)}个唯一的聚类标签"
-    )
+    print(f"对'{cluster_column}'列进行One-Hot编码，发现{len(unique_clusters)}个唯一的聚类标签")
 
     # 使用pandas的get_dummies函数进行One-Hot编码
     cluster_dummies = pd.get_dummies(result_df[cluster_column], prefix=prefix)
@@ -483,9 +494,7 @@ def encode_cluster_features(
         result_df = result_df.drop(columns=[cluster_column])
         print(f"已删除原始'{cluster_column}'列")
 
-    print(
-        f"One-Hot编码后数据形状: {result_df.shape}，新增了{len(unique_clusters)}个特征列"
-    )
+    print(f"One-Hot编码后数据形状: {result_df.shape}，新增了{len(unique_clusters)}个特征列")
 
     # 展示部分编码后的特征名
     encoded_cols = [col for col in result_df.columns if col.startswith(prefix)]
