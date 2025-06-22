@@ -227,11 +227,11 @@ def visualize_attribute_map(
 
         # 绘制真实井点数据
         if real_wells is not None and target_column in real_wells.columns:
-            plt.hist(real_wells[target_column], bins=20, alpha=0.7, color="green", label="储层参数实际值")
+            plt.hist(real_wells[target_column], bins=20, alpha=0.7, color="green", label="真实井")
 
         # 绘制虚拟井点数据
         if pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns:
-            plt.hist(pseudo_wells["Mean_Pred"], bins=20, alpha=0.7, color="orange", label="储层参数预测值")
+            plt.hist(pseudo_wells["Mean_Pred"], bins=20, alpha=0.7, color="orange", label="虚拟井")
 
         # 添加标题和标签
         plt.xlabel("储层参数值", fontsize=12)
