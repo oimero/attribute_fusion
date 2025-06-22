@@ -390,7 +390,7 @@ def preprocess_features(data, attribute_columns, missing_values=[-999], verbose=
         verbose (bool): 是否打印详细信息，默认为True
 
     返回:
-        DataFrame: 处理后的特征数据框
+        tuple: (处理后的特征数据框, 统计信息字典)
     """
     # 提取特征
     features = data[attribute_columns].copy()
@@ -421,15 +421,38 @@ def preprocess_features(data, attribute_columns, missing_values=[-999], verbose=
             print(f"\n删除以下全部缺失的列: {missing_cols}")
         features = features.drop(columns=missing_cols)
 
+    # 存储每个特征的统计信息
+    feature_stats = {}
+
     # 填充剩余列中的NaN值
-    # 对于每一列，如果均值是NaN，则使用0填充
     for col in features.columns:
-        if pd.isna(features[col].mean()):
+        # 获取有效值统计量
+        valid_feature_data = features[col].dropna()
+
+        if len(valid_feature_data) > 0:
+            feature_mean = valid_feature_data.mean()
+            feature_std = valid_feature_data.std()
+            # 确保标准差不为零，避免除零错误
+            if feature_std < 1e-10:
+                feature_std = 1.0
+                if verbose:
+                    print(f"警告: 属性 '{col}' 标准差接近零，已设为1.0")
+        else:
+            if verbose:
+                print(f"错误: 属性 '{col}' 没有有效数据")
+            feature_mean = 0.0
+            feature_std = 1.0
+
+        # 存储统计信息
+        feature_stats[col] = {"mean": feature_mean, "std": feature_std}
+
+        # 填充缺失值
+        if pd.isna(feature_mean):
             if verbose:
                 print(f"列 '{col}' 的均值为NaN，使用0填充")
             features[col] = features[col].fillna(0)
         else:
-            features[col] = features[col].fillna(features[col].mean())
+            features[col] = features[col].fillna(feature_mean)
 
     if verbose:
         print(f"\n清理并填充后的特征形状: {features.shape}")
@@ -440,4 +463,4 @@ def preprocess_features(data, attribute_columns, missing_values=[-999], verbose=
             print("警告：数据中仍然存在NaN值，将它们替换为0")
         features = features.fillna(0)
 
-    return features
+    return features, feature_stats
