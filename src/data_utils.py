@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from scipy.spatial import cKDTree
 
 
 def identify_attributes(file_path):
@@ -464,3 +465,94 @@ def preprocess_features(data, attribute_columns, missing_values=[-999], verbose=
         features = features.fillna(0)
 
     return features, feature_stats
+
+
+def extract_uniform_seismic_samples(seismic_data, n_rows=15, n_cols=15, random_seed=42, area_bounds=None):
+    """
+    在地震数据中等间距地提取样本点（用于后续虚拟井点生成）
+
+    参数:
+        seismic_data (DataFrame): 包含X和Y坐标的地震数据
+        n_rows (int): 采样网格的行数
+        n_cols (int): 采样网格的列数
+        random_seed (int): 随机数种子，用于可重复性
+        area_bounds (dict, optional): 指定采样区域的边界，格式为
+                                     {'x_min': float, 'x_max': float,
+                                      'y_min': float, 'y_max': float}
+                                     如果为None，则使用整个数据集的范围
+
+    返回:
+        DataFrame: 包含均匀分布的样本点的X、Y坐标和对应的地震属性
+    """
+
+    np.random.seed(random_seed)
+
+    # 如果未指定边界，使用数据的实际范围
+    if area_bounds is None:
+        x_min, x_max = seismic_data["X"].min(), seismic_data["X"].max()
+        y_min, y_max = seismic_data["Y"].min(), seismic_data["Y"].max()
+    else:
+        x_min, x_max = area_bounds["x_min"], area_bounds["x_max"]
+        y_min, y_max = area_bounds["y_min"], area_bounds["y_max"]
+
+    print(f"采样区域范围: X=[{x_min:.2f}, {x_max:.2f}], Y=[{y_min:.2f}, {y_max:.2f}]")
+
+    # 检查地震数据是否覆盖了指定区域
+    in_area = (
+        (seismic_data["X"] >= x_min)
+        & (seismic_data["X"] <= x_max)
+        & (seismic_data["Y"] >= y_min)
+        & (seismic_data["Y"] <= y_max)
+    )
+
+    seismic_in_area = seismic_data[in_area]
+    print(
+        f"指定区域内的地震数据点数: {len(seismic_in_area)} / {len(seismic_data)} ({len(seismic_in_area) / len(seismic_data) * 100:.2f}%)"
+    )
+
+    if len(seismic_in_area) == 0:
+        print("警告: 指定区域内没有地震数据点!")
+        # 可以选择在这里返回空DataFrame或修改区域边界
+
+    # 创建均匀网格 - 直接使用指定的行数和列数
+    x_points = np.linspace(x_min, x_max, n_cols)
+    y_points = np.linspace(y_min, y_max, n_rows)
+
+    # 生成网格点
+    xx, yy = np.meshgrid(x_points, y_points)
+    grid_points = np.column_stack([xx.ravel(), yy.ravel()])
+
+    total_points = n_rows * n_cols
+    print(f"生成了 {total_points} 个等间距采样点 ({n_rows}行 x {n_cols}列)")
+
+    # 创建DataFrame存储采样点
+    seismic_samples = pd.DataFrame(grid_points, columns=["X", "Y"])
+
+    # 构建KD树用于快速最近邻搜索
+    seismic_points = seismic_data[["X", "Y"]].values
+    tree = cKDTree(seismic_points)
+
+    # 查找每个采样点的最近地震点
+    distances, indices = tree.query(seismic_samples[["X", "Y"]].values, k=1)
+
+    # 打印距离统计信息
+    print(
+        f"最近距离统计: 最小={distances.min():.2f}, 最大={distances.max():.2f}, 平均={distances.mean():.2f}, 中位数={np.median(distances):.2f}"
+    )
+
+    # 获取每个采样点对应的地震属性 - 直接获取，不筛选NaN
+    for col in seismic_data.columns:
+        if col not in ["X", "Y"]:
+            seismic_samples[col] = seismic_data.iloc[indices][col].values
+
+    # 添加样本编号 - 包含行列信息
+    sample_ids = []
+    for i in range(n_rows):
+        for j in range(n_cols):
+            sample_ids.append(f"S{i + 1:02d}{j + 1:02d}")  # 例如S0101表示第1行第1列
+
+    seismic_samples["Sample_ID"] = sample_ids
+
+    print(f"最终返回 {len(seismic_samples)} 个采样点")
+
+    return seismic_samples

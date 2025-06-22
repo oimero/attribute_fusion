@@ -5,163 +5,249 @@ import numpy as np
 import pandas as pd
 
 
-def visualize_model_results(
-    y_test,
-    y_pred,
-    y_test_zero,
-    y_pred_is_zero,
-    threshold_zero=0.1,
+def visualize_attribute_map(
+    data_points,
+    attribute_name="Predicted_Sand_Thickness",
+    attribute_label="砂厚预测值(米)",
+    real_wells=None,
+    pseudo_wells=None,
+    target_column="Thickness of facies(1: Fine sand)",
     output_dir="output",
-    filename_prefix="svr_model",
+    filename_prefix="attribute_map",
+    class_thresholds=[0.1, 25],  # 分类阈值：低值(<0.1)、中值(0.1-25)、高值(>25)
+    figsize=(16, 14),
+    dpi=300,
+    cmap="viridis",
+    point_size=3,
+    well_size=60,
 ):
     """
-    可视化模型性能并保存结果
+    可视化任意属性分布和井点位置
 
     参数:
-        y_test: 测试集真实值
-        y_pred: 测试集预测值
-        y_test_zero: 测试集中真实值是否为零的布尔数组
-        y_pred_is_zero: 测试集中预测值是否为零的布尔数组
-        threshold_zero: 零值阈值
-        output_dir: 输出目录
-        filename_prefix: 文件名前缀
+        data_points (DataFrame): 包含坐标和属性值的数据框(必须包含X、Y和attribute_name列)
+        attribute_name (str): 要可视化的属性列名
+        attribute_label (str): 属性在图例和颜色条中的显示名称
+        real_wells (DataFrame): 真实井点数据，需包含X、Y和target_column列
+        pseudo_wells (DataFrame): 虚拟井点数据，需包含X、Y和预测列
+        target_column (str): 目标列名称（如砂厚）
+        output_dir (str): 输出目录
+        filename_prefix (str): 输出文件名前缀
+        class_thresholds (list): 分类阈值，默认[0.1, 25]表示<0.1为低值，0.1-25为中值，>25为高值
+        figsize (tuple): 图像尺寸
+        dpi (int): 图像分辨率
+        cmap (str): 颜色图谱
+        point_size (int): 数据点大小
+        well_size (int): 井点标记大小
+        alpha (float): 透明度
     """
-    # 创建真值vs预测值散点图
-    plt.figure(figsize=(10, 8))
 
-    # 绘制散点图，区分"砂厚=0"和"砂厚>0"的样本
-    plt.scatter(
-        y_test[~y_test_zero],
-        y_pred[~y_test_zero],
-        c="blue",
-        alpha=0.6,
-        label="砂厚 > 0",
+    # 创建输出目录
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # 检查必要的列是否存在
+    required_cols = ["X", "Y", attribute_name]
+    if not all(col in data_points.columns for col in required_cols):
+        missing = [col for col in required_cols if col not in data_points.columns]
+        raise ValueError(f"数据中缺少必要的列: {missing}")
+
+    # 创建图像
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # 绘制属性分布散点图（背景）
+    scatter = ax.scatter(
+        data_points["X"],
+        data_points["Y"],
+        c=data_points[attribute_name],
+        cmap=cmap,
+        s=point_size,
+        marker="s",
     )
-    plt.scatter(
-        y_test[y_test_zero], y_pred[y_test_zero], c="red", alpha=0.6, label="砂厚 ≈ 0"
+
+    # 添加颜色条
+    cbar = fig.colorbar(scatter, ax=ax, label=attribute_label)
+    cbar.ax.tick_params(labelsize=10)
+
+    # 如果提供了真实井点数据，按目标值分类并绘制
+    if real_wells is not None and target_column in real_wells.columns:
+        # 按目标值分类
+        low_class = real_wells[real_wells[target_column] < class_thresholds[0]]
+        medium_class = real_wells[
+            (real_wells[target_column] >= class_thresholds[0]) & (real_wells[target_column] <= class_thresholds[1])
+        ]
+        high_class = real_wells[real_wells[target_column] > class_thresholds[1]]
+
+        # 绘制不同类别的真实井点
+        ax.scatter(
+            low_class["X"],
+            low_class["Y"],
+            color="#FF5733",  # 红橙色
+            s=well_size,
+            marker="^",
+            label=f"真实井：实际值<{class_thresholds[0]}: {len(low_class)}个",
+            edgecolors="white",
+            linewidth=1.5,
+            zorder=10,
+        )
+
+        ax.scatter(
+            medium_class["X"],
+            medium_class["Y"],
+            color="#FFFF00",  # 黄色
+            s=well_size,
+            marker="^",
+            label=f"真实井：实际值({class_thresholds[0]}-{class_thresholds[1]}): {len(medium_class)}个",
+            edgecolors="white",
+            linewidth=1.5,
+            zorder=10,
+        )
+
+        ax.scatter(
+            high_class["X"],
+            high_class["Y"],
+            color="#FF00FF",  # 品红色
+            s=well_size,
+            marker="^",
+            label=f"真实井：实际值>{class_thresholds[1]}: {len(high_class)}个",
+            edgecolors="white",
+            linewidth=1.5,
+            zorder=10,
+        )
+
+    # 如果提供了虚拟井点数据，按预测值分类并绘制
+    if pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns:
+        # 将平均预测值作为虚拟井的目标值
+        pseudo_target = "Mean_Pred"
+
+        # 按预测值分类
+        low_pseudo = pseudo_wells[pseudo_wells[pseudo_target] < class_thresholds[0]]
+        medium_pseudo = pseudo_wells[
+            (pseudo_wells[pseudo_target] >= class_thresholds[0]) & (pseudo_wells[pseudo_target] <= class_thresholds[1])
+        ]
+        high_pseudo = pseudo_wells[pseudo_wells[pseudo_target] > class_thresholds[1]]
+
+        # 绘制不同类别的虚拟井点
+        ax.scatter(
+            low_pseudo["X"],
+            low_pseudo["Y"],
+            color="#FF5733",  # 红橙色
+            s=well_size * 0.7,  # 虚拟井点稍小一些
+            marker="o",
+            label=f"虚拟井：预测值<{class_thresholds[0]}: {len(low_pseudo)}个",
+            edgecolors="white",
+            linewidth=1,
+            zorder=9,
+            alpha=0.9,
+        )
+
+        ax.scatter(
+            medium_pseudo["X"],
+            medium_pseudo["Y"],
+            color="#FFFF00",  # 黄色
+            s=well_size * 0.7,
+            marker="o",
+            label=f"虚拟井：预测值({class_thresholds[0]}-{class_thresholds[1]}): {len(medium_pseudo)}个",
+            edgecolors="white",
+            linewidth=1,
+            zorder=9,
+            alpha=0.9,
+        )
+
+        ax.scatter(
+            high_pseudo["X"],
+            high_pseudo["Y"],
+            color="#FF00FF",  # 品红色
+            s=well_size * 0.7,
+            marker="o",
+            label=f"虚拟井：预测值>{class_thresholds[1]}: {len(high_pseudo)}个",
+            edgecolors="white",
+            linewidth=1,
+            zorder=9,
+            alpha=0.9,
+        )
+
+    # 添加图表标题和标签
+    ax.set_title(f"{attribute_label}分布与井点位置", fontsize=16)
+    ax.set_xlabel("X坐标", fontsize=14)
+    ax.set_ylabel("Y坐标", fontsize=14)
+
+    # 调整图例位置到左下角，并确保不被其他元素遮挡
+    ax.legend(
+        loc="lower left",  # 位置改为左下角
+        fontsize=10,
+        framealpha=0.9,  # 增加不透明度
+        fancybox=True,  # 使用圆角边框
+        shadow=True,  # 添加阴影效果
+        ncol=1,  # 单列显示
     )
 
-    # 绘制对角线 (y=x)
-    max_val = max(np.max(y_test), np.max(y_pred))
-    plt.plot([0, max_val], [0, max_val], "k--", label="理想预测")
+    # 添加网格线
+    ax.grid(True, alpha=0.3, linestyle="--")
 
-    # 绘制阈值线
-    plt.axhline(
-        y=threshold_zero, color="green", linestyle=":", label=f"阈值 = {threshold_zero}"
-    )
-    plt.axvline(x=threshold_zero, color="green", linestyle=":")
-
-    plt.xlabel("真实砂厚")
-    plt.ylabel("预测砂厚")
-    plt.title("SVR回归：真实值 vs 预测值")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+    # 调整布局以确保所有元素正常显示
+    plt.tight_layout()
 
     # 保存图像
     plt.savefig(
-        os.path.join(output_dir, f"{filename_prefix}_true_vs_pred.png"),
-        dpi=300,
+        os.path.join(output_dir, f"{filename_prefix}_map_with_wells.png"),
+        dpi=dpi,
         bbox_inches="tight",
     )
     plt.show()
     plt.close()
 
-    # 创建误差直方图
-    errors = y_pred - y_test
-    plt.figure(figsize=(10, 6))
-    plt.hist(errors, bins=30, alpha=0.7, color="blue")
-    plt.axvline(x=0, color="red", linestyle="--")
-    plt.xlabel("预测误差 (预测值 - 真实值)")
-    plt.ylabel("频数")
-    plt.title("SVR回归预测误差分布")
-    plt.grid(True, alpha=0.3)
-    plt.savefig(
-        os.path.join(output_dir, f"{filename_prefix}_error_distribution.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.show()
-    plt.close()
+    # 拆分为两张直方图：属性分布和井点分布
 
-    # 保存预测结果
-    results_df = pd.DataFrame(
-        {
-            "True_Value": y_test,
-            "Predicted_Value": y_pred,
-            "Is_Zero_True": y_test_zero,
-            "Is_Zero_Pred": y_pred_is_zero,
-            "Error": errors,
-        }
-    )
-    results_df.to_csv(
-        os.path.join(output_dir, f"{filename_prefix}_prediction_results.csv"),
-        index=False,
-    )
-
-
-def visualize_predictions(
-    prediction_results,
-    output_dir="output",
-    filename_prefix="predicted",
-    threshold_zero=0.1,
-):
-    """
-    可视化预测结果
-
-    参数:
-        prediction_results (DataFrame): 包含预测结果的数据框
-        output_dir (str): 输出目录
-        filename_prefix (str): 输出文件名前缀
-        threshold_zero (float): 小于此值视为0
-    """
-    # 获取统计数据
-    pred_mean = prediction_results["Predicted_Sand_Thickness"].mean()
-    pred_max = prediction_results["Predicted_Sand_Thickness"].max()
-
-    # 可视化预测结果 - 散点图
-    plt.figure(figsize=(14, 12))
-    scatter = plt.scatter(
-        prediction_results["X"],
-        prediction_results["Y"],
-        c=prediction_results["Predicted_Sand_Thickness"],
-        cmap="viridis",
-        s=2,  # 点大小较小，因为点数可能很多
-        alpha=0.7,
-        vmin=0,
-        vmax=min(pred_max, pred_mean * 3),  # 限制颜色范围，便于观察
-    )
-    plt.colorbar(scatter, label="预测砂厚")
-    plt.title("砂厚预测结果空间分布")
-    plt.xlabel("X坐标")
-    plt.ylabel("Y坐标")
-    plt.savefig(
-        os.path.join(output_dir, f"{filename_prefix}_sand_thickness_map.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.show()
-    plt.close()
-
-    # 可视化预测结果 - 直方图
+    # 1. 绘制属性值的直方图
     plt.figure(figsize=(12, 6))
-    plt.hist(
-        prediction_results["Predicted_Sand_Thickness"], bins=50, alpha=0.7, color="blue"
-    )
-    plt.axvline(
-        x=threshold_zero, color="red", linestyle="--", label=f"阈值 = {threshold_zero}"
-    )
-    plt.xlabel("预测砂厚")
-    plt.ylabel("频数")
-    plt.title("砂厚预测结果分布")
+    plt.hist(data_points[attribute_name], bins=50, alpha=0.7, color="blue", label=f"{attribute_label}")
+
+    # 添加标题和标签
+    plt.xlabel(attribute_label, fontsize=12)
+    plt.ylabel("频数", fontsize=12)
+    plt.title(f"{attribute_label}统计分布", fontsize=14)
     plt.grid(True, alpha=0.3)
     plt.legend()
+
+    # 保存图像
     plt.savefig(
-        os.path.join(output_dir, f"{filename_prefix}_sand_thickness_histogram.png"),
-        dpi=300,
+        os.path.join(output_dir, f"{filename_prefix}_attribute_histogram.png"),
+        dpi=dpi,
         bbox_inches="tight",
     )
     plt.show()
     plt.close()
+
+    # 2. 如果有井点数据，单独绘制井点值的直方图
+    if (real_wells is not None and target_column in real_wells.columns) or (
+        pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns
+    ):
+        plt.figure(figsize=(12, 6))
+
+        # 绘制真实井点数据
+        if real_wells is not None and target_column in real_wells.columns:
+            plt.hist(real_wells[target_column], bins=20, alpha=0.7, color="green", label="储层参数实际值")
+
+        # 绘制虚拟井点数据
+        if pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns:
+            plt.hist(pseudo_wells["Mean_Pred"], bins=20, alpha=0.7, color="orange", label="储层参数预测值")
+
+        # 添加标题和标签
+        plt.xlabel("储层参数值", fontsize=12)
+        plt.ylabel("频数", fontsize=12)
+        plt.title("井点储层参数分布", fontsize=14)
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+
+        # 保存图像
+        plt.savefig(
+            os.path.join(output_dir, f"{filename_prefix}_wells_histogram.png"),
+            dpi=dpi,
+            bbox_inches="tight",
+        )
+        plt.show()
+        plt.close()
 
 
 def export_to_petrel_format(
@@ -179,9 +265,7 @@ def export_to_petrel_format(
         output_dir (str): 输出目录
         filename_prefix (str): 输出文件名前缀
     """
-    petrel_output_file = os.path.join(
-        output_dir, f"{filename_prefix}_sand_thickness_petrel.txt"
-    )
+    petrel_output_file = os.path.join(output_dir, f"{filename_prefix}_sand_thickness_petrel.txt")
     with open(petrel_output_file, "w") as f:
         # 写入标题
         f.write("# 砂厚预测结果\n")
