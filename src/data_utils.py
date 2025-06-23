@@ -130,6 +130,214 @@ def parse_petrel_file(file_path):
         return None
 
 
+def filter_seismic_by_wells(
+    seismic_data, well_data, expansion_factor=1.5, plot=True, output_dir=None, figsize=(15, 10)
+):
+    """
+    根据井点分布范围筛选地震数据
+
+    参数:
+        seismic_data (DataFrame): 地震数据
+        well_data (DataFrame): 井点数据
+        expansion_factor (float): 范围扩展比例，默认1.5（扩展50%）
+        plot (bool): 是否绘制可视化图形
+        output_dir (str): 输出目录，如果为None则不保存图片
+        figsize (tuple): 图形大小
+
+    返回:
+        DataFrame: 筛选后的地震数据
+        dict: 区域边界信息
+    """
+    # 获取井点数据的X、Y范围
+    well_x_min = well_data["X"].min()
+    well_x_max = well_data["X"].max()
+    well_y_min = well_data["Y"].min()
+    well_y_max = well_data["Y"].max()
+
+    # 计算中心点坐标（可用于后续处理）
+    well_x_center = (well_x_min + well_x_max) / 2
+    well_y_center = (well_y_min + well_y_max) / 2
+
+    # 打印井点区域范围
+    print(f"井点数据X轴范围: {well_x_min:.2f} 到 {well_x_max:.2f}")
+    print(f"井点数据Y轴范围: {well_y_min:.2f} 到 {well_y_max:.2f}")
+
+    # 计算扩展边界
+    x_padding = (well_x_max - well_x_min) * (expansion_factor - 1) / 2
+    y_padding = (well_y_max - well_y_min) * (expansion_factor - 1) / 2
+
+    # 应用扩展后的范围
+    area_x_min = well_x_min - x_padding
+    area_x_max = well_x_max + x_padding
+    area_y_min = well_y_min - y_padding
+    area_y_max = well_y_max + y_padding
+
+    # 筛选出井点范围内的地震数据
+    filtered_data = seismic_data[
+        (seismic_data["X"] >= area_x_min)
+        & (seismic_data["X"] <= area_x_max)
+        & (seismic_data["Y"] >= area_y_min)
+        & (seismic_data["Y"] <= area_y_max)
+    ].copy()
+
+    # 统计过滤前后的数据量
+    original_size = len(seismic_data)
+    filtered_size = len(filtered_data)
+    reduction_percent = (1 - filtered_size / original_size) * 100
+
+    print(f"原始地震数据点数: {original_size}")
+    print(f"缩小范围后的地震数据点数: {filtered_size}")
+    print(f"数据量减少了: {reduction_percent:.2f}%")
+
+    # 记录区域边界信息
+    area_bounds = {
+        "x_min": area_x_min,
+        "x_max": area_x_max,
+        "y_min": area_y_min,
+        "y_max": area_y_max,
+        "x_center": well_x_center,
+        "y_center": well_y_center,
+        "expansion_factor": expansion_factor,
+    }
+
+    # 可视化原始数据与筛选后的数据分布
+    if plot:
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=figsize)
+
+        # 绘制地震数据点（使用抽样以避免过多点导致图像渲染缓慢）
+        sample_ratio = min(1.0, 5000 / len(seismic_data))
+        seismic_sample = seismic_data.sample(frac=sample_ratio)
+        plt.scatter(
+            seismic_sample["X"], seismic_sample["Y"], color="lightgray", alpha=0.3, s=10, label="原始地震数据(抽样)"
+        )
+
+        # 绘制筛选后的地震数据
+        filtered_sample_ratio = min(1.0, 3000 / len(filtered_data))
+        filtered_sample = filtered_data.sample(frac=filtered_sample_ratio)
+        plt.scatter(
+            filtered_sample["X"], filtered_sample["Y"], color="blue", alpha=0.5, s=15, label="筛选后的地震数据(抽样)"
+        )
+
+        # 绘制井点位置
+        plt.scatter(well_data["X"], well_data["Y"], color="red", s=80, marker="^", label="井点位置")
+
+        # 绘制筛选边界框
+        plt.axvline(x=area_x_min, color="red", linestyle="--", alpha=0.8)
+        plt.axvline(x=area_x_max, color="red", linestyle="--", alpha=0.8)
+        plt.axhline(y=area_y_min, color="red", linestyle="--", alpha=0.8)
+        plt.axhline(y=area_y_max, color="red", linestyle="--", alpha=0.8)
+
+        # 添加标题和图例
+        plt.title("地震数据与井点分布", fontsize=16)
+        plt.xlabel("X坐标", fontsize=14)
+        plt.ylabel("Y坐标", fontsize=14)
+        plt.legend(loc="upper right")
+        plt.grid(True, linestyle="--", alpha=0.7)
+
+        # 保存图片（如果指定了输出目录）
+        if output_dir:
+            import os
+
+            plt.savefig(os.path.join(output_dir, "seismic_well_distribution.png"), dpi=300, bbox_inches="tight")
+
+        plt.show()
+
+    return filtered_data, area_bounds
+
+
+def extract_uniform_seismic_samples(seismic_data, n_rows=15, n_cols=15, random_seed=42, area_bounds=None):
+    """
+    在地震数据中等间距地提取样本点（用于后续虚拟井点生成）
+
+    参数:
+        seismic_data (DataFrame): 包含X和Y坐标的地震数据
+        n_rows (int): 采样网格的行数
+        n_cols (int): 采样网格的列数
+        random_seed (int): 随机数种子，用于可重复性
+        area_bounds (dict, optional): 指定采样区域的边界，格式为
+                                     {'x_min': float, 'x_max': float,
+                                      'y_min': float, 'y_max': float}
+                                     如果为None，则使用整个数据集的范围
+
+    返回:
+        DataFrame: 包含均匀分布的样本点的X、Y坐标和对应的地震属性
+    """
+
+    np.random.seed(random_seed)
+
+    # 如果未指定边界，使用数据的实际范围
+    if area_bounds is None:
+        x_min, x_max = seismic_data["X"].min(), seismic_data["X"].max()
+        y_min, y_max = seismic_data["Y"].min(), seismic_data["Y"].max()
+    else:
+        x_min, x_max = area_bounds["x_min"], area_bounds["x_max"]
+        y_min, y_max = area_bounds["y_min"], area_bounds["y_max"]
+
+    print(f"采样区域范围: X=[{x_min:.2f}, {x_max:.2f}], Y=[{y_min:.2f}, {y_max:.2f}]")
+
+    # 检查地震数据是否覆盖了指定区域
+    in_area = (
+        (seismic_data["X"] >= x_min)
+        & (seismic_data["X"] <= x_max)
+        & (seismic_data["Y"] >= y_min)
+        & (seismic_data["Y"] <= y_max)
+    )
+
+    seismic_in_area = seismic_data[in_area]
+    print(
+        f"指定区域内的地震数据点数: {len(seismic_in_area)} / {len(seismic_data)} ({len(seismic_in_area) / len(seismic_data) * 100:.2f}%)"
+    )
+
+    if len(seismic_in_area) == 0:
+        print("警告: 指定区域内没有地震数据点!")
+        # 可以选择在这里返回空DataFrame或修改区域边界
+
+    # 创建均匀网格 - 直接使用指定的行数和列数
+    x_points = np.linspace(x_min, x_max, n_cols)
+    y_points = np.linspace(y_min, y_max, n_rows)
+
+    # 生成网格点
+    xx, yy = np.meshgrid(x_points, y_points)
+    grid_points = np.column_stack([xx.ravel(), yy.ravel()])
+
+    total_points = n_rows * n_cols
+    print(f"生成了 {total_points} 个等间距采样点 ({n_rows}行 x {n_cols}列)")
+
+    # 创建DataFrame存储采样点
+    seismic_samples = pd.DataFrame(grid_points, columns=["X", "Y"])
+
+    # 构建KD树用于快速最近邻搜索
+    seismic_points = seismic_data[["X", "Y"]].values
+    tree = cKDTree(seismic_points)
+
+    # 查找每个采样点的最近地震点
+    distances, indices = tree.query(seismic_samples[["X", "Y"]].values, k=1)
+
+    # 打印距离统计信息
+    print(
+        f"最近距离统计: 最小={distances.min():.2f}, 最大={distances.max():.2f}, 平均={distances.mean():.2f}, 中位数={np.median(distances):.2f}"
+    )
+
+    # 获取每个采样点对应的地震属性 - 直接获取，不筛选NaN
+    for col in seismic_data.columns:
+        if col not in ["X", "Y"]:
+            seismic_samples[col] = seismic_data.iloc[indices][col].values
+
+    # 添加样本编号 - 包含行列信息
+    sample_ids = []
+    for i in range(n_rows):
+        for j in range(n_cols):
+            sample_ids.append(f"S{i + 1:02d}{j + 1:02d}")  # 例如S0101表示第1行第1列
+
+    seismic_samples["Sample_ID"] = sample_ids
+
+    print(f"最终返回 {len(seismic_samples)} 个采样点")
+
+    return seismic_samples
+
+
 def filter_anomalous_attributes(
     seismic_data,
     well_data,
@@ -465,94 +673,3 @@ def preprocess_features(data, attribute_columns, missing_values=[-999], verbose=
         features = features.fillna(0)
 
     return features, feature_stats
-
-
-def extract_uniform_seismic_samples(seismic_data, n_rows=15, n_cols=15, random_seed=42, area_bounds=None):
-    """
-    在地震数据中等间距地提取样本点（用于后续虚拟井点生成）
-
-    参数:
-        seismic_data (DataFrame): 包含X和Y坐标的地震数据
-        n_rows (int): 采样网格的行数
-        n_cols (int): 采样网格的列数
-        random_seed (int): 随机数种子，用于可重复性
-        area_bounds (dict, optional): 指定采样区域的边界，格式为
-                                     {'x_min': float, 'x_max': float,
-                                      'y_min': float, 'y_max': float}
-                                     如果为None，则使用整个数据集的范围
-
-    返回:
-        DataFrame: 包含均匀分布的样本点的X、Y坐标和对应的地震属性
-    """
-
-    np.random.seed(random_seed)
-
-    # 如果未指定边界，使用数据的实际范围
-    if area_bounds is None:
-        x_min, x_max = seismic_data["X"].min(), seismic_data["X"].max()
-        y_min, y_max = seismic_data["Y"].min(), seismic_data["Y"].max()
-    else:
-        x_min, x_max = area_bounds["x_min"], area_bounds["x_max"]
-        y_min, y_max = area_bounds["y_min"], area_bounds["y_max"]
-
-    print(f"采样区域范围: X=[{x_min:.2f}, {x_max:.2f}], Y=[{y_min:.2f}, {y_max:.2f}]")
-
-    # 检查地震数据是否覆盖了指定区域
-    in_area = (
-        (seismic_data["X"] >= x_min)
-        & (seismic_data["X"] <= x_max)
-        & (seismic_data["Y"] >= y_min)
-        & (seismic_data["Y"] <= y_max)
-    )
-
-    seismic_in_area = seismic_data[in_area]
-    print(
-        f"指定区域内的地震数据点数: {len(seismic_in_area)} / {len(seismic_data)} ({len(seismic_in_area) / len(seismic_data) * 100:.2f}%)"
-    )
-
-    if len(seismic_in_area) == 0:
-        print("警告: 指定区域内没有地震数据点!")
-        # 可以选择在这里返回空DataFrame或修改区域边界
-
-    # 创建均匀网格 - 直接使用指定的行数和列数
-    x_points = np.linspace(x_min, x_max, n_cols)
-    y_points = np.linspace(y_min, y_max, n_rows)
-
-    # 生成网格点
-    xx, yy = np.meshgrid(x_points, y_points)
-    grid_points = np.column_stack([xx.ravel(), yy.ravel()])
-
-    total_points = n_rows * n_cols
-    print(f"生成了 {total_points} 个等间距采样点 ({n_rows}行 x {n_cols}列)")
-
-    # 创建DataFrame存储采样点
-    seismic_samples = pd.DataFrame(grid_points, columns=["X", "Y"])
-
-    # 构建KD树用于快速最近邻搜索
-    seismic_points = seismic_data[["X", "Y"]].values
-    tree = cKDTree(seismic_points)
-
-    # 查找每个采样点的最近地震点
-    distances, indices = tree.query(seismic_samples[["X", "Y"]].values, k=1)
-
-    # 打印距离统计信息
-    print(
-        f"最近距离统计: 最小={distances.min():.2f}, 最大={distances.max():.2f}, 平均={distances.mean():.2f}, 中位数={np.median(distances):.2f}"
-    )
-
-    # 获取每个采样点对应的地震属性 - 直接获取，不筛选NaN
-    for col in seismic_data.columns:
-        if col not in ["X", "Y"]:
-            seismic_samples[col] = seismic_data.iloc[indices][col].values
-
-    # 添加样本编号 - 包含行列信息
-    sample_ids = []
-    for i in range(n_rows):
-        for j in range(n_cols):
-            sample_ids.append(f"S{i + 1:02d}{j + 1:02d}")  # 例如S0101表示第1行第1列
-
-    seismic_samples["Sample_ID"] = sample_ids
-
-    print(f"最终返回 {len(seismic_samples)} 个采样点")
-
-    return seismic_samples
