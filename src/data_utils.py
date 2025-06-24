@@ -130,6 +130,295 @@ def parse_petrel_file(file_path):
         return None
 
 
+def preprocess_features(
+    data,
+    attribute_columns,
+    missing_values=[-999],
+    missing_threshold=0.6,
+    outlier_method="iqr",
+    outlier_threshold=1.5,
+    verbose=True,
+):
+    """
+    预处理特征数据，包括缺失值处理、异常值替换和特征筛选
+
+    参数:
+        data (DataFrame): 包含特征的数据框
+        attribute_columns (list): 需要处理的特征列名列表
+        missing_values (list): 要替换为NaN的值列表，默认为[-999]
+        missing_threshold (float): 缺失值占比阈值，超过此值的列将被删除，默认为0.6 (60%)
+        outlier_method (str): 离群值检测方法，可选 'iqr'(四分位距) 或 'zscore'(标准分数)
+        outlier_threshold (float): 离群值判定阈值，默认为1.5 (IQR方法) 或 3.0 (Z-score方法)
+        verbose (bool): 是否打印详细信息，默认为True
+
+    返回:
+        tuple: (处理后的特征数据框, 统计信息字典)
+    """
+    # 提取特征
+    features = data[attribute_columns].copy()
+
+    # 替换缺失值
+    for val in missing_values:
+        features = features.replace(val, np.nan)
+
+    if verbose:
+        print(f"处理前特征: {features.shape}")
+
+    # 检查缺失值情况
+    missing_per_column = features.isna().sum()
+    missing_ratio_per_column = missing_per_column / len(features)
+
+    if verbose:
+        print("\n每列缺失值情况:")
+
+    # 根据缺失值阈值筛选列
+    high_missing_cols = []
+    for col, missing_ratio in missing_ratio_per_column.items():
+        if verbose:
+            print(f"  - {col}: {missing_per_column[col]} ({missing_ratio * 100:.2f}%)")
+
+        if missing_ratio >= missing_threshold:
+            high_missing_cols.append(col)
+
+    if high_missing_cols:
+        if verbose:
+            print(f"\n删除以下缺失值比例 >= {missing_threshold * 100}% 的列: {high_missing_cols}")
+        features = features.drop(columns=high_missing_cols)
+
+    # 存储每个特征的统计信息
+    feature_stats = {}
+
+    # 处理剩余列中的缺失值和离群值
+    for col in features.columns:
+        # 获取有效值
+        valid_data = features[col].dropna()
+
+        if len(valid_data) == 0:
+            if verbose:
+                print(f"警告: 属性 '{col}' 没有有效数据，将使用0填充")
+            features[col] = features[col].fillna(0)
+            feature_stats[col] = {"mean": 0.0, "std": 1.0, "median": 0.0, "q1": 0.0, "q3": 0.0}
+            continue
+
+        # 检测并处理离群值
+        if outlier_method == "iqr":
+            # 使用IQR方法识别离群值
+            q1 = valid_data.quantile(0.25)
+            q3 = valid_data.quantile(0.75)
+            iqr = q3 - q1
+            lower_bound = q1 - outlier_threshold * iqr
+            upper_bound = q3 + outlier_threshold * iqr
+
+            # 筛选非离群数据
+            clean_data = valid_data[(valid_data >= lower_bound) & (valid_data <= upper_bound)]
+
+            # 存储统计信息
+            feature_stats[col] = {
+                "mean": clean_data.mean(),
+                "std": clean_data.std(),
+                "median": clean_data.median(),
+                "q1": q1,
+                "q3": q3,
+                "lower_bound": lower_bound,
+                "upper_bound": upper_bound,
+            }
+
+        elif outlier_method == "zscore":
+            # 使用Z-score方法识别离群值
+            mean = valid_data.mean()
+            std = valid_data.std()
+
+            if std < 1e-10:
+                std = 1.0
+                if verbose:
+                    print(f"警告: 属性 '{col}' 标准差接近零，已设为1.0")
+
+            z_scores = np.abs((valid_data - mean) / std)
+            clean_data = valid_data[z_scores <= outlier_threshold]
+
+            # 存储统计信息
+            feature_stats[col] = {
+                "mean": clean_data.mean(),
+                "std": clean_data.std(),
+                "median": clean_data.median(),
+                "mean_with_outliers": mean,
+                "std_with_outliers": std,
+            }
+
+        else:
+            raise ValueError(f"不支持的离群值检测方法: {outlier_method}，请使用 'iqr' 或 'zscore'")
+
+        # 使用清理后的数据计算填充值
+        fill_value = clean_data.mean()
+
+        # 检查填充值是否有效
+        if pd.isna(fill_value):
+            if verbose:
+                print(f"警告: 属性 '{col}' 的计算填充值为NaN，将使用原始数据的中位数")
+            fill_value = valid_data.median()
+            if pd.isna(fill_value):
+                if verbose:
+                    print(f"警告: 属性 '{col}' 的中位数仍为NaN，将使用0")
+                fill_value = 0
+
+        # 填充缺失值
+        features[col] = features[col].fillna(fill_value)
+
+        # 记录离群值和缺失值处理情况
+        if verbose:
+            print(f"  - 属性 '{col}'的填充值为 {fill_value:.4f}")
+
+    if verbose:
+        print(f"\n清理并填充后的特征形状: {features.shape}")
+
+    # 最终检查是否仍有NaN值
+    if features.isna().any().any():
+        if verbose:
+            print("警告：数据中仍然存在NaN值，将它们替换为0")
+        features = features.fillna(0)
+
+    return features, feature_stats
+
+
+def filter_outlier_wells(well_data, method="iqr", distance_threshold=None):
+    """
+    筛选并剔除离群井
+
+    参数:
+    well_data: 井点数据DataFrame
+    method: 'iqr'使用箱线图方法，'distance'使用距离方法
+    distance_threshold: 使用distance方法时的距离阈值
+
+    返回:
+    filtered_well_data: 过滤后的井点数据
+    """
+    if method == "iqr":
+        # 使用箱线图方法 (IQR = Q3 - Q1)
+        Q1_x = well_data["X"].quantile(0.25)
+        Q3_x = well_data["X"].quantile(0.75)
+        IQR_x = Q3_x - Q1_x
+
+        Q1_y = well_data["Y"].quantile(0.25)
+        Q3_y = well_data["Y"].quantile(0.75)
+        IQR_y = Q3_y - Q1_y
+
+        # 定义异常值边界 (通常是Q1-1.5*IQR和Q3+1.5*IQR)
+        lower_bound_x = Q1_x - 1.5 * IQR_x
+        upper_bound_x = Q3_x + 1.5 * IQR_x
+        lower_bound_y = Q1_y - 1.5 * IQR_y
+        upper_bound_y = Q3_y + 1.5 * IQR_y
+
+        # 筛选正常范围内的井点
+        filtered_well_data = well_data[
+            (well_data["X"] >= lower_bound_x)
+            & (well_data["X"] <= upper_bound_x)
+            & (well_data["Y"] >= lower_bound_y)
+            & (well_data["Y"] <= upper_bound_y)
+        ]
+
+    elif method == "distance":
+        if distance_threshold is None:
+            raise ValueError("使用distance方法时必须提供distance_threshold参数")
+
+        # 计算井点的中心位置
+        center_x = well_data["X"].mean()
+        center_y = well_data["Y"].mean()
+
+        # 计算每个井点到中心的距离
+        well_data["distance_to_center"] = np.sqrt((well_data["X"] - center_x) ** 2 + (well_data["Y"] - center_y) ** 2)
+
+        # 筛选距离中心不超过阈值的井点
+        filtered_well_data = well_data[well_data["distance_to_center"] <= distance_threshold]
+        filtered_well_data = filtered_well_data.drop(columns=["distance_to_center"])
+
+    else:
+        raise ValueError("method参数必须是'iqr'或'distance'")
+
+    return filtered_well_data.reset_index(drop=True)
+
+
+def extract_seismic_attributes_at_location(seismic_data, x, y, max_distance=None, num_points=None):
+    """
+    提取指定位置附近的地震属性平均值
+
+    参数:
+    seismic_data: 地震数据，包含X、Y坐标和属性值
+    x, y: 目标位置的X、Y坐标
+    max_distance: 最大距离范围，超过此距离的点不会被考虑
+    num_points: 最多使用的点数量
+
+    返回:
+    attributes_dict: 包含平均属性值的字典
+    """
+    # 计算所有地震点到目标点的距离
+    distances = np.sqrt((seismic_data["X"] - x) ** 2 + (seismic_data["Y"] - y) ** 2)
+
+    # 将距离添加到数据中
+    temp_data = seismic_data.copy()
+    temp_data["distance"] = distances
+
+    # 根据距离排序
+    temp_data = temp_data.sort_values("distance")
+
+    # 应用最大距离过滤
+    if max_distance is not None:
+        temp_data = temp_data[temp_data["distance"] <= max_distance]
+
+    # 应用点数量限制
+    if num_points is not None and len(temp_data) > num_points:
+        temp_data = temp_data.iloc[:num_points]
+
+    # 如果没有符合条件的点，返回空字典
+    if len(temp_data) == 0:
+        print(f"警告: 在坐标({x}, {y})附近没有找到符合条件的地震点")
+        return {}
+
+    # 获取所有属性列名（排除X、Y和distance列）
+    attribute_cols = [col for col in temp_data.columns if col not in ["X", "Y", "distance", "INLINE", "XLINE", "Z"]]
+
+    # 计算每个属性的平均值
+    attributes_dict = {}
+    for attr in attribute_cols:
+        attributes_dict[attr] = temp_data[attr].mean()
+
+    # 返回包含使用的点数量信息
+    attributes_dict["num_points_used"] = len(temp_data)
+    attributes_dict["avg_distance"] = temp_data["distance"].mean()
+
+    return attributes_dict
+
+
+def extract_seismic_attributes_for_wells(well_data, seismic_data, max_distance=None, num_points=None):
+    """
+    为所有井点提取地震属性
+
+    参数:
+    well_data: 井点数据DataFrame
+    seismic_data: 地震数据DataFrame
+    max_distance: 最大距离范围
+    num_points: 每个井点使用的最多点数量
+
+    返回:
+    well_data_with_attributes: 包含地震属性的井点数据
+    """
+    # 创建结果DataFrame的副本
+    well_data_with_attributes = well_data.copy()
+
+    # 遍历每个井点
+    for idx, well in well_data.iterrows():
+        # 提取该井点处的地震属性
+        attributes = extract_seismic_attributes_at_location(
+            seismic_data, well["X"], well["Y"], max_distance, num_points
+        )
+
+        # 如果找到了属性，则添加到结果中
+        if attributes:
+            for attr_name, attr_value in attributes.items():
+                well_data_with_attributes.loc[idx, attr_name] = attr_value
+
+    return well_data_with_attributes
+
+
 def filter_seismic_by_wells(
     seismic_data, well_data, expansion_factor=1.5, plot=True, output_dir=None, figsize=(15, 10)
 ):
@@ -586,90 +875,3 @@ def filter_anomalous_attributes(
         plt.close()
 
     return good_attrs, anomalous_attrs, comparison_df
-
-
-def preprocess_features(data, attribute_columns, missing_values=[-999], verbose=True):
-    """
-    预处理特征数据，包括缺失值处理、异常值替换和特征筛选
-
-    参数:
-        data (DataFrame): 包含特征的数据框
-        attribute_columns (list): 需要处理的特征列名列表
-        missing_values (list): 要替换为NaN的值列表，默认为[-999]
-        verbose (bool): 是否打印详细信息，默认为True
-
-    返回:
-        tuple: (处理后的特征数据框, 统计信息字典)
-    """
-    # 提取特征
-    features = data[attribute_columns].copy()
-
-    # 替换缺失值
-    for val in missing_values:
-        features = features.replace(val, np.nan)
-
-    if verbose:
-        print(f"处理前特征: {features.shape}")
-
-    # 检查缺失值情况
-    missing_per_column = features.isna().sum()
-    if verbose:
-        print("\n每列缺失值数量:")
-    missing_cols = []
-    for col, missing in missing_per_column.items():
-        missing_ratio = missing / len(features) * 100
-        if verbose:
-            print(f"  - {col}: {missing} ({missing_ratio:.2f}%)")
-
-        # 标记缺失率较高的列
-        if missing_ratio >= 89.9:
-            missing_cols.append(col)
-
-    if missing_cols:
-        if verbose:
-            print(f"\n删除以下全部缺失的列: {missing_cols}")
-        features = features.drop(columns=missing_cols)
-
-    # 存储每个特征的统计信息
-    feature_stats = {}
-
-    # 填充剩余列中的NaN值
-    for col in features.columns:
-        # 获取有效值统计量
-        valid_feature_data = features[col].dropna()
-
-        if len(valid_feature_data) > 0:
-            feature_mean = valid_feature_data.mean()
-            feature_std = valid_feature_data.std()
-            # 确保标准差不为零，避免除零错误
-            if feature_std < 1e-10:
-                feature_std = 1.0
-                if verbose:
-                    print(f"警告: 属性 '{col}' 标准差接近零，已设为1.0")
-        else:
-            if verbose:
-                print(f"错误: 属性 '{col}' 没有有效数据")
-            feature_mean = 0.0
-            feature_std = 1.0
-
-        # 存储统计信息
-        feature_stats[col] = {"mean": feature_mean, "std": feature_std}
-
-        # 填充缺失值
-        if pd.isna(feature_mean):
-            if verbose:
-                print(f"列 '{col}' 的均值为NaN，使用0填充")
-            features[col] = features[col].fillna(0)
-        else:
-            features[col] = features[col].fillna(feature_mean)
-
-    if verbose:
-        print(f"\n清理并填充后的特征形状: {features.shape}")
-
-    # 检查是否仍有NaN值
-    if features.isna().any().any():
-        if verbose:
-            print("警告：数据中仍然存在NaN值，将它们替换为0")
-        features = features.fillna(0)
-
-    return features, feature_stats
