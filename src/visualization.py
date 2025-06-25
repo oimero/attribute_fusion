@@ -15,11 +15,11 @@ def visualize_attribute_map(
     output_dir="output",
     filename_prefix="attribute_map",
     class_thresholds=[0.1, 10],  # 分类阈值：低值(<0.1)、中值(0.1-10)、高值(>10)
-    figsize=(16, 14),
+    figsize=(14, 14),
     dpi=300,
     cmap="viridis",
     point_size=10,
-    well_size=60,
+    well_size=50,
 ):
     """
     可视化任意属性分布和井点位置
@@ -220,34 +220,34 @@ def visualize_attribute_map(
     plt.close()
 
     # 2. 如果有井点数据，单独绘制井点值的直方图
-    if (real_wells is not None and target_column in real_wells.columns) or (
-        pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns
-    ):
-        plt.figure(figsize=(12, 6))
+    # if (real_wells is not None and target_column in real_wells.columns) or (
+    #     pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns
+    # ):
+    #     plt.figure(figsize=(12, 6))
 
-        # 绘制真实井点数据
-        if real_wells is not None and target_column in real_wells.columns:
-            plt.hist(real_wells[target_column], bins=20, alpha=0.7, color="green", label="真实井")
+    #     # 绘制真实井点数据
+    #     if real_wells is not None and target_column in real_wells.columns:
+    #         plt.hist(real_wells[target_column], bins=20, alpha=0.7, color="green", label="真实井")
 
-        # 绘制虚拟井点数据
-        if pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns:
-            plt.hist(pseudo_wells["Mean_Pred"], bins=20, alpha=0.7, color="orange", label="虚拟井")
+    #     # 绘制虚拟井点数据
+    #     if pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns:
+    #         plt.hist(pseudo_wells["Mean_Pred"], bins=20, alpha=0.7, color="orange", label="虚拟井")
 
-        # 添加标题和标签
-        plt.xlabel("储层参数值", fontsize=12)
-        plt.ylabel("频数", fontsize=12)
-        plt.title("井点储层参数分布", fontsize=14)
-        plt.grid(True, alpha=0.3)
-        plt.legend()
+    #     # 添加标题和标签
+    #     plt.xlabel("储层参数值", fontsize=12)
+    #     plt.ylabel("频数", fontsize=12)
+    #     plt.title("井点储层参数分布", fontsize=14)
+    #     plt.grid(True, alpha=0.3)
+    #     plt.legend()
 
-        # 保存图像
-        plt.savefig(
-            os.path.join(output_dir, f"{filename_prefix}_wells_histogram.png"),
-            dpi=dpi,
-            bbox_inches="tight",
-        )
-        plt.show()
-        plt.close()
+    #     # 保存图像
+    #     plt.savefig(
+    #         os.path.join(output_dir, f"{filename_prefix}_wells_histogram.png"),
+    #         dpi=dpi,
+    #         bbox_inches="tight",
+    #     )
+    #     plt.show()
+    #     plt.close()
 
 
 def visualize_gmm_clustering(
