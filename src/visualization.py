@@ -449,7 +449,7 @@ def visualize_pca_clustering(
                 features_pca[mask, 1],
                 label=f"聚类 {cluster}",
                 s=30,
-                alpha=0.7,
+                alpha=0.5,
             )
 
         # 如果提供了井点在PCA空间的坐标，将井点添加到图中
