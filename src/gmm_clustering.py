@@ -123,17 +123,20 @@ def evaluate_gmm_clusters(features_pca, max_clusters=10, output_dir="output"):
     }
 
 
-def perform_gmm_clustering(features_pca, coords, n_clusters, output_dir="output", random_state=42, prefix=""):
+def perform_gmm_clustering(
+    features,  # 通用特征矩阵
+    coords,
+    n_clusters,
+    random_state=42,
+):
     """
-    执行指定聚类数的GMM聚类并可视化结果
+    执行指定聚类数的GMM聚类
 
     参数:
-        features_pca (ndarray): PCA降维后的特征矩阵
+        features (ndarray): 特征矩阵，可以是原始特征或PCA降维后的特征
         coords (DataFrame): 对应的坐标数据
         n_clusters (int): 聚类数量
-        output_dir (str): 输出图表的目录，默认为"output"
         random_state (int): 随机种子，默认为42
-        prefix (str): 输出文件名前缀，默认为""
 
     返回:
         dict: 包含GMM聚类结果的字典
@@ -147,118 +150,25 @@ def perform_gmm_clustering(features_pca, coords, n_clusters, output_dir="output"
         random_state=random_state,
         n_init=10,  # 多次初始化以获得更稳定的结果
     )
-    gmm.fit(features_pca)
+    gmm.fit(features)
 
     # 获取聚类标签和概率
-    cluster_labels = gmm.predict(features_pca)
-    cluster_probs = gmm.predict_proba(features_pca)
+    cluster_labels = gmm.predict(features)
+    cluster_probs = gmm.predict_proba(features)
 
     # 将聚类结果添加到原始数据中
     result_df = pd.DataFrame(
         {
             "X": coords["X"],
             "Y": coords["Y"],
-            "Z": coords["Z"],
             "Cluster": cluster_labels,
         }
     )
 
-    # 文件名前缀
-    file_prefix = f"{prefix}_{n_clusters}_clusters_" if prefix else f"{n_clusters}_clusters_"
-
-    # 创建颜色映射，确保聚类颜色清晰区分
-    unique_clusters = sorted(np.unique(cluster_labels))
-    colors = plt.cm.viridis(np.linspace(0, 1, n_clusters))
-    cluster_colors = {cluster: colors[i] for i, cluster in enumerate(unique_clusters)}
-
-    # 可视化1: 空间分布
-    plt.figure(figsize=(12, 10))
-
-    # 创建散点图 - 保持原始绘图方式
-    scatter = plt.scatter(
-        result_df["X"],
-        result_df["Y"],
-        c=cluster_labels,
-        cmap="viridis",
-        s=30,
-        alpha=0.8,
-        linewidths=0.5,
-    )
-
-    # 添加图例，而不是颜色条
-    legend1 = plt.legend(
-        handles=[
-            plt.Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                markerfacecolor=scatter.cmap(scatter.norm(c)),
-                markersize=10,
-                label=f"聚类 {c}",
-            )
-            for c in unique_clusters
-        ],
-        title="聚类标签",
-        loc="best",
-    )
-    plt.gca().add_artist(legend1)
-
-    # 不添加颜色条 (删除 plt.colorbar() 调用)
-
-    plt.title(f"样本点的聚类分布 (聚类数={n_clusters})")
-    plt.xlabel("X坐标")
-    plt.ylabel("Y坐标")
-    plt.savefig(
-        os.path.join(output_dir, f"{file_prefix}gmm_spatial.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.show()
-
-    # 可视化2: PCA投影
-    if features_pca.shape[1] >= 2:
-        plt.figure(figsize=(10, 8))
-
-        # 为每个聚类单独绘制散点图
-        for cluster in unique_clusters:
-            mask = cluster_labels == cluster
-            plt.scatter(
-                features_pca[mask, 0],
-                features_pca[mask, 1],
-                c=[cluster_colors[cluster]],
-                label=f"聚类 {cluster}",
-                s=30,
-                alpha=0.7,
-            )
-
-        plt.title(f"PCA投影下的聚类分布 (聚类数={n_clusters})")
-        plt.xlabel("主成分1")
-        plt.ylabel("主成分2")
-        plt.legend(loc="best")  # 在图的角落添加图例
-        plt.savefig(
-            os.path.join(output_dir, f"{file_prefix}gmm_pca_projection.png"),
-            dpi=300,
-            bbox_inches="tight",
-        )
-        plt.show()
-
     # 统计各聚类的样本数
     cluster_counts = result_df["Cluster"].value_counts().sort_index()
 
-    plt.figure(figsize=(10, 6))
-    cluster_counts.plot(kind="bar")
-    plt.title(f"各聚类样本数量分布 (聚类数={n_clusters})")
-    plt.xlabel("聚类")
-    plt.ylabel("样本数量")
-    plt.grid(axis="y")
-    plt.savefig(
-        os.path.join(output_dir, f"{file_prefix}gmm_cluster_counts.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.show()
-
+    # 打印聚类统计信息
     print("\n各聚类样本数量:")
     for cluster, count in cluster_counts.items():
         print(f"聚类 {cluster}: {count} 样本 ({count / len(result_df) * 100:.2f}%)")
@@ -275,13 +185,14 @@ def perform_gmm_clustering(features_pca, coords, n_clusters, output_dir="output"
     }
 
 
+# deprecated
 def augment_samples_by_pca_mixing(
     well_data,
     pca_model,
     scaler,
     cluster_results,
     attribute_columns,
-    target_column="Thickness of facies(1: Fine sand)",
+    target_column="Sand Thickness",
     min_samples_per_cluster=3,
     augmentation_factor=2.0,
     min_target_per_cluster=5,
@@ -459,6 +370,7 @@ def augment_samples_by_pca_mixing(
     return augmented_data
 
 
+# deprecated
 def encode_cluster_features(data, cluster_column="Cluster", drop_original=True, prefix="Cluster_"):
     """
     对数据中的聚类标签进行One-Hot编码，并将编码后的特征添加到原始数据中

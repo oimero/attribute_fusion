@@ -33,10 +33,10 @@ def perform_pca_analysis(
     print(f"数据集大小: {data.shape}")
 
     # 预处理特征
-    features = preprocess_features(data, attribute_columns, missing_values)
+    features, _ = preprocess_features(data, attribute_columns, missing_values, verbose=False)
 
     # 提取对应的坐标
-    coords_clean = data[["X", "Y", "Z"]]
+    coords_clean = data[["X", "Y"]]
 
     # 标准化
     scaler = StandardScaler()
@@ -51,9 +51,7 @@ def perform_pca_analysis(
 
     # 确定需要保留的主成分数量
     n_components = np.argmax(explained_variance_ratio_cumsum >= variance_threshold) + 1
-    print(
-        f"为保留至少{variance_threshold * 100}%的方差，需要保留{n_components}个主成分"
-    )
+    print(f"为保留至少{variance_threshold * 100}%的方差，需要保留{n_components}个主成分")
 
     # 绘制解释方差比
     plt.figure(figsize=(10, 6))
