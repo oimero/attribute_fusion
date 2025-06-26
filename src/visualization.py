@@ -13,12 +13,13 @@ def visualize_attribute_map(
     target_column="Sand Thickness",
     output_dir="output",
     filename_prefix="attribute_map",
-    class_thresholds=[0.1, 10],  # 分类阈值：低值(<0.1)、中值(0.1-10)、高值(>10)
+    class_thresholds=[0.1, 10],
     figsize=(14, 14),
     dpi=300,
     cmap="viridis",
     point_size=10,
     well_size=50,
+    vrange=None,  # 色彩范围元组(vmin, vmax)
 ):
     """
     可视化任意属性分布和井点位置
@@ -38,7 +39,7 @@ def visualize_attribute_map(
         cmap (str): 颜色图谱
         point_size (int): 数据点大小
         well_size (int): 井点标记大小
-        alpha (float): 透明度
+        vrange (tuple): 色彩范围元组(vmin, vmax)，None则使用数据自身范围
     """
 
     # 创建输出目录
@@ -51,6 +52,11 @@ def visualize_attribute_map(
         missing = [col for col in required_cols if col not in data_points.columns]
         raise ValueError(f"数据中缺少必要的列: {missing}")
 
+    # 解析vrange参数
+    vmin, vmax = None, None
+    if vrange is not None:
+        vmin, vmax = vrange
+
     # 创建图像
     fig, ax = plt.subplots(figsize=figsize)
 
@@ -62,6 +68,8 @@ def visualize_attribute_map(
         cmap=cmap,
         s=point_size,
         marker="s",
+        vmin=vmin,
+        vmax=vmax,
     )
 
     # 添加颜色条
@@ -217,36 +225,6 @@ def visualize_attribute_map(
     )
     plt.show()
     plt.close()
-
-    # 2. 如果有井点数据，单独绘制井点值的直方图
-    # if (real_wells is not None and target_column in real_wells.columns) or (
-    #     pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns
-    # ):
-    #     plt.figure(figsize=(12, 6))
-
-    #     # 绘制真实井点数据
-    #     if real_wells is not None and target_column in real_wells.columns:
-    #         plt.hist(real_wells[target_column], bins=20, alpha=0.7, color="green", label="真实井")
-
-    #     # 绘制虚拟井点数据
-    #     if pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns:
-    #         plt.hist(pseudo_wells["Mean_Pred"], bins=20, alpha=0.7, color="orange", label="虚拟井")
-
-    #     # 添加标题和标签
-    #     plt.xlabel("储层参数值", fontsize=12)
-    #     plt.ylabel("频数", fontsize=12)
-    #     plt.title("井点储层参数分布", fontsize=14)
-    #     plt.grid(True, alpha=0.3)
-    #     plt.legend()
-
-    #     # 保存图像
-    #     plt.savefig(
-    #         os.path.join(output_dir, f"{filename_prefix}_wells_histogram.png"),
-    #         dpi=dpi,
-    #         bbox_inches="tight",
-    #     )
-    #     plt.show()
-    #     plt.close()
 
 
 def visualize_gmm_clustering(
