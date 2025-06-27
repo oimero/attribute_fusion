@@ -92,7 +92,7 @@ def visualize_attribute_map(
             color="#FF5733",  # 红橙色
             s=well_size,
             marker="^",
-            label=f"真实井：实际值<{class_thresholds[0]}: {len(low_class)}个",
+            label=f"真实井：厚度 < {class_thresholds[0]}m: {len(low_class)}个",
             edgecolors="white",
             linewidth=1.5,
             zorder=10,
@@ -104,7 +104,7 @@ def visualize_attribute_map(
             color="#FFFF00",  # 黄色
             s=well_size,
             marker="^",
-            label=f"真实井：实际值({class_thresholds[0]}-{class_thresholds[1]}): {len(medium_class)}个",
+            label=f"真实井：厚度在 {class_thresholds[0]}m-{class_thresholds[1]}m: {len(medium_class)}个",
             edgecolors="white",
             linewidth=1.5,
             zorder=10,
@@ -116,63 +116,73 @@ def visualize_attribute_map(
             color="#FF00FF",  # 品红色
             s=well_size,
             marker="^",
-            label=f"真实井：实际值>{class_thresholds[1]}: {len(high_class)}个",
+            label=f"真实井：厚度 > {class_thresholds[1]}m: {len(high_class)}个",
             edgecolors="white",
             linewidth=1.5,
             zorder=10,
         )
 
     # 如果提供了虚拟井点数据，按预测值分类并绘制
-    if pseudo_wells is not None and "Mean_Pred" in pseudo_wells.columns:
-        # 将平均预测值作为虚拟井的目标值
-        pseudo_target = "Mean_Pred"
+    if pseudo_wells is not None:
+        # 自动检测预测列名
+        possible_pred_columns = ["Mean_Pred", "Predicted_Sand_Thickness", "Sand_Thickness_Pred", target_column]
+        pseudo_target = None
 
-        # 按预测值分类
-        low_pseudo = pseudo_wells[pseudo_wells[pseudo_target] < class_thresholds[0]]
-        medium_pseudo = pseudo_wells[
-            (pseudo_wells[pseudo_target] >= class_thresholds[0]) & (pseudo_wells[pseudo_target] <= class_thresholds[1])
-        ]
-        high_pseudo = pseudo_wells[pseudo_wells[pseudo_target] > class_thresholds[1]]
+        for col in possible_pred_columns:
+            if col in pseudo_wells.columns:
+                pseudo_target = col
+                break
 
-        # 绘制不同类别的虚拟井点
-        ax.scatter(
-            low_pseudo["X"],
-            low_pseudo["Y"],
-            color="#FF5733",  # 红橙色
-            s=well_size * 0.7,  # 虚拟井点稍小一些
-            marker="o",
-            label=f"虚拟井：预测值<{class_thresholds[0]}: {len(low_pseudo)}个",
-            edgecolors="white",
-            linewidth=1,
-            zorder=9,
-            alpha=0.9,
-        )
+        if pseudo_target is None:
+            print("警告：在虚拟井数据中未找到合适的预测列，跳过虚拟井显示")
+        else:
+            # 按预测值分类
+            low_pseudo = pseudo_wells[pseudo_wells[pseudo_target] < class_thresholds[0]]
+            medium_pseudo = pseudo_wells[
+                (pseudo_wells[pseudo_target] >= class_thresholds[0])
+                & (pseudo_wells[pseudo_target] <= class_thresholds[1])
+            ]
+            high_pseudo = pseudo_wells[pseudo_wells[pseudo_target] > class_thresholds[1]]
 
-        ax.scatter(
-            medium_pseudo["X"],
-            medium_pseudo["Y"],
-            color="#FFFF00",  # 黄色
-            s=well_size * 0.7,
-            marker="o",
-            label=f"虚拟井：预测值({class_thresholds[0]}-{class_thresholds[1]}): {len(medium_pseudo)}个",
-            edgecolors="white",
-            linewidth=1,
-            zorder=9,
-            alpha=0.9,
-        )
+            # 绘制不同类别的虚拟井点
+            ax.scatter(
+                low_pseudo["X"],
+                low_pseudo["Y"],
+                color="#FF5733",  # 红橙色
+                s=well_size * 0.7,  # 虚拟井点稍小一些
+                marker="o",
+                label=f"虚拟井：厚度 < {class_thresholds[0]}m: {len(low_pseudo)}个",
+                edgecolors="white",
+                linewidth=1,
+                zorder=9,
+                alpha=0.9,
+            )
 
-        ax.scatter(
-            high_pseudo["X"],
-            high_pseudo["Y"],
-            color="#FF00FF",  # 品红色
-            s=well_size * 0.7,
-            marker="o",
-            label=f"虚拟井：预测值>{class_thresholds[1]}: {len(high_pseudo)}个",
-            edgecolors="white",
-            linewidth=1,
-            zorder=9,
-            alpha=0.9,
-        )
+            ax.scatter(
+                medium_pseudo["X"],
+                medium_pseudo["Y"],
+                color="#FFFF00",  # 黄色
+                s=well_size * 0.7,
+                marker="o",
+                label=f"虚拟井：厚度在 {class_thresholds[0]}m-{class_thresholds[1]}m: {len(medium_pseudo)}个",
+                edgecolors="white",
+                linewidth=1,
+                zorder=9,
+                alpha=0.9,
+            )
+
+            ax.scatter(
+                high_pseudo["X"],
+                high_pseudo["Y"],
+                color="#FF00FF",  # 品红色
+                s=well_size * 0.7,
+                marker="o",
+                label=f"虚拟井：厚度 > {class_thresholds[1]}m: {len(high_pseudo)}个",
+                edgecolors="white",
+                linewidth=1,
+                zorder=9,
+                alpha=0.9,
+            )
 
     # 添加图表标题和标签
     ax.set_title(f"{attribute_label}分布与井点位置", fontsize=16)
@@ -181,7 +191,8 @@ def visualize_attribute_map(
 
     # 调整图例位置到左下角，并确保不被其他元素遮挡
     ax.legend(
-        loc="lower left",  # 位置改为左下角
+        bbox_to_anchor=(-0.25, 0),  # 位置：x轴左移25%，y轴底部对齐
+        loc="lower left",  # 图例内部的对齐方式
         fontsize=10,
         framealpha=0.9,  # 增加不透明度
         fancybox=True,  # 使用圆角边框

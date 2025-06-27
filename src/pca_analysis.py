@@ -92,14 +92,14 @@ def perform_pca_analysis(
     plt.show()
 
     # 使用选择的主成分数重新应用PCA
-    pca = PCA(n_components=n_components)
-    features_pca = pca.fit_transform(features_scaled)
+    pca_final = PCA(n_components=n_components)
+    features_pca = pca_final.fit_transform(features_scaled)
     print(f"降维后的特征形状: {features_pca.shape}")
 
     # 打印每个主成分对应的原始特征贡献
     component_contributions = pd.DataFrame(
-        pca.components_,
-        columns=features.columns,  # 注意这里使用的是已清理的列
+        pca_final.components_,
+        columns=features.columns,
         index=[f"PC{i + 1}" for i in range(n_components)],
     )
     print("\n主成分与原始特征的关系:")
@@ -107,13 +107,16 @@ def perform_pca_analysis(
 
     print("======== PCA降维分析完成 ========")
 
-    # 返回结果
+    # 返回结果 - 添加缺失的键
     return {
-        "pca": pca,
+        "pca": pca_final,  # 使用最终的PCA模型
         "scaler": scaler,
+        "features_scaled": features_scaled,  # 添加标准化后的特征
         "n_components": n_components,
         "component_contributions": component_contributions,
         "features_clean": features,
         "features_pca": features_pca,
         "coords_clean": coords_clean,
+        "explained_variance_ratio": pca_final.explained_variance_ratio_,  # 添加解释方差比
+        "explained_variance_ratio_cumsum": np.cumsum(pca_final.explained_variance_ratio_),  # 添加累积解释方差比
     }
