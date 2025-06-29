@@ -284,25 +284,27 @@ def preprocess_features(
         else:
             raise ValueError(f"不支持的离群值检测方法: {outlier_method}，请使用 'iqr' 或 'zscore'")
 
-        # 使用清理后的数据计算填充值
-        fill_value = clean_data.mean()
+        # 检查是否有缺失值需要填充
+        if features[col].isna().any():
+            # 使用清理后的数据计算填充值
+            fill_value = clean_data.mean()
 
-        # 检查填充值是否有效
-        if pd.isna(fill_value):
-            if verbose:
-                print(f"警告: 属性 '{col}' 的计算填充值为NaN，将使用原始数据的中位数")
-            fill_value = valid_data.median()
+            # 检查填充值是否有效
             if pd.isna(fill_value):
                 if verbose:
-                    print(f"警告: 属性 '{col}' 的中位数仍为NaN，将使用0")
-                fill_value = 0
+                    print(f"警告: 属性 '{col}' 的计算填充值为NaN，将使用原始数据的中位数")
+                fill_value = valid_data.median()
+                if pd.isna(fill_value):
+                    if verbose:
+                        print(f"警告: 属性 '{col}' 的中位数仍为NaN，将使用0")
+                    fill_value = 0
 
-        # 填充缺失值
-        features[col] = features[col].fillna(fill_value)
+            # 填充缺失值
+            features[col] = features[col].fillna(fill_value)
 
-        # 记录离群值和缺失值处理情况
-        if verbose:
-            print(f"  - 属性 '{col}'的填充值为 {fill_value:.4f}")
+            # 只打印有缺失值的属性的填充信息
+            if verbose:
+                print(f"  - 属性 '{col}' 的填充值为 {fill_value:.4f}")
 
     if verbose:
         print(f"\n清理并填充后的特征形状: {features.shape}")
