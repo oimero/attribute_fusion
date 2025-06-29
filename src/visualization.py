@@ -238,6 +238,90 @@ def visualize_attribute_map(
     plt.close()
 
 
+def visualize_feature_distribution(
+    data,
+    x_feature,
+    y_feature,
+    figsize=(10, 6),
+    point_size=50,
+    alpha=0.6,
+    colormap="viridis",
+    title=None,
+    save_path=None,
+):
+    """
+    通用的特征分布可视化函数
+
+    Parameters:
+    -----------
+    data : pd.DataFrame
+        包含特征数据的DataFrame
+    x_feature : str
+        x轴特征名
+    y_feature : str
+        y轴特征名（用作颜色映射）
+    figsize : tuple, default=(10, 6)
+        图形大小
+    point_size : int, default=50
+        点的大小
+    alpha : float, default=0.6
+        透明度
+    colormap : str, default="viridis"
+        颜色映射
+    title : str, optional
+        图表标题，如果None则自动生成
+    save_path : str, optional
+        保存路径
+
+    Returns:
+    --------
+    matplotlib.figure.Figure : 生成的图形对象
+    """
+    plt.figure(figsize=figsize)
+
+    # 创建散点图，颜色表示y特征
+    scatter = plt.scatter(
+        data[x_feature],
+        data[y_feature],
+        c=data[y_feature],
+        s=point_size,
+        alpha=alpha,
+        cmap=colormap,
+        edgecolors="black",
+        linewidth=0.5,
+    )
+
+    plt.colorbar(scatter, label=f"{y_feature}")
+    plt.xlabel(f"{x_feature}")
+    plt.ylabel(f"{y_feature}")
+
+    if title is None:
+        title = f"特征分布: {x_feature} vs {y_feature}"
+    plt.title(title)
+    plt.grid(True, alpha=0.3)
+
+    # 添加统计信息
+    stats_text = f"样本数: {len(data)}\n"
+    stats_text += f"{y_feature}范围: {data[y_feature].min():.2f} - {data[y_feature].max():.2f}\n"
+    stats_text += f"{x_feature}范围: {data[x_feature].min():.2f} - {data[x_feature].max():.2f}"
+
+    plt.text(
+        0.02,
+        0.98,
+        stats_text,
+        transform=plt.gca().transAxes,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+    )
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
+    return plt.gcf()
+
+
 def visualize_gmm_clustering(
     clustering_results,
     output_dir="output",
@@ -504,31 +588,3 @@ def visualize_pca_clustering(
     else:
         print("PCA特征维度小于2，无法在二维空间可视化")
 
-
-def export_to_petrel_format(
-    prediction_results,
-    coords_columns=["X", "Y", "Z"],
-    output_dir="output",
-    filename_prefix="predicted",
-):
-    """
-    将预测结果导出为Petrel可读的XYZ格式
-
-    参数:
-        prediction_results (DataFrame): 包含预测结果的数据框
-        coords_columns (list): 坐标列名称
-        output_dir (str): 输出目录
-        filename_prefix (str): 输出文件名前缀
-    """
-    petrel_output_file = os.path.join(output_dir, f"{filename_prefix}_sand_thickness_petrel.txt")
-    with open(petrel_output_file, "w") as f:
-        # 写入标题
-        f.write("# 砂厚预测结果\n")
-        f.write(f"# {' '.join(coords_columns)} Predicted_Sand_Thickness\n")
-
-        # 写入数据
-        for _, row in prediction_results.iterrows():
-            coords = " ".join([f"{row[col]:.6f}" for col in coords_columns])
-            f.write(f"{coords} {row['Predicted_Sand_Thickness']:.6f}\n")
-
-    print(f"预测结果已保存为Petrel可导入的XYZ格式: {petrel_output_file}")

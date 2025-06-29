@@ -67,23 +67,32 @@ def parse_petrel_file(file_path):
 
     # 分析文件头确定列结构
     column_meanings = []
+    header_field_count = 0
+
     for line in lines:
         if line.startswith("# Field"):
             parts = line.split(":")
             if len(parts) >= 2:
                 field_name = parts[1].strip()
                 column_meanings.append(field_name)
+                header_field_count += 1
 
     print(f"识别到的列含义: {column_meanings}")
+    print(f"文件头定义的基础列数: {header_field_count}")
 
     # 步骤2: 构建列名
-    # 前几列使用文件头中定义的名称
-    column_names = column_meanings.copy() if column_meanings else ["X", "Y", "Z"]
+    # 使用文件头中定义的基础列名
+    if column_meanings:
+        column_names = column_meanings.copy()
+    else:
+        # 如果没有找到文件头定义，使用默认值
+        column_names = ["X", "Y", "Z", "column", "row"]
+        header_field_count = 5
 
     # 添加属性列名
     column_names.extend(attributes)
 
-    # 确认列数
+    # 确认实际数据列数
     with open(file_path, "r") as file:
         for i, line in enumerate(file):
             if i > skip_rows:  # 第一个数据行
@@ -96,15 +105,37 @@ def parse_petrel_file(file_path):
     # 处理列数不匹配的情况
     if num_columns != len(column_names):
         print(f"警告: 列数({num_columns})与列名数({len(column_names)})不匹配!")
-        # 如果列名太多，截断
+
         if len(column_names) > num_columns:
+            # 如果列名太多，截断属性列名
+            excess_count = len(column_names) - num_columns
+            print(f"截断属性列名，删除最后 {excess_count} 个属性")
             column_names = column_names[:num_columns]
-            print(f"截断列名列表至 {num_columns} 个")
-        # 如果列名太少，添加占位符
+
         else:
-            for i in range(len(column_names), num_columns):
-                column_names.append(f"Column_{i + 1}")
-            print(f"添加占位符列名至 {num_columns} 个")
+            # 如果列名太少，在基础列和属性列之间添加占位符
+            missing_count = num_columns - len(column_names)
+            print(f"需要添加 {missing_count} 个占位符列名")
+
+            # 在基础列（如X,Y,Z,column,row）之后、属性列之前插入占位符
+            base_columns = column_names[:header_field_count]  # 基础列
+            attr_columns = column_names[header_field_count:]  # 属性列
+
+            # 生成占位符列名
+            placeholder_columns = []
+            for i in range(missing_count):
+                placeholder_columns.append(f"Unknown_Column_{i + 1}")
+
+            # 重新组合列名：基础列 + 占位符 + 属性列
+            column_names = base_columns + placeholder_columns + attr_columns
+
+            print(f"在基础列后添加占位符列名: {placeholder_columns}")
+            print(f"最终列名列表长度: {len(column_names)}")
+
+    # 验证最终列名数量
+    if len(column_names) != num_columns:
+        print(f"错误: 调整后的列名数量({len(column_names)})仍与数据列数({num_columns})不匹配!")
+        return None
 
     # 读取数据
     try:
@@ -121,8 +152,13 @@ def parse_petrel_file(file_path):
         # 打印数据的基本统计信息以验证
         print("\n数据预览:")
         print(df.head())
-        print("\n各列统计信息:")
-        print(df.describe().T[["min", "max", "mean", "std"]])
+
+        # 只显示关键列的统计信息，避免输出过多占位符列
+        key_columns = ["X", "Y", "Z"] + [col for col in df.columns if col in attributes][:5]  # 显示前5个属性
+        available_key_columns = [col for col in key_columns if col in df.columns]
+
+        print(f"\n关键列统计信息 (显示{len(available_key_columns)}列):")
+        print(df[available_key_columns].describe().T[["min", "max", "mean", "std"]])
 
         return df
     except Exception as e:
@@ -875,3 +911,32 @@ def filter_anomalous_attributes(
         plt.close()
 
     return good_attrs, anomalous_attrs, comparison_df
+
+
+def export_to_petrel_format(
+    prediction_results,
+    coords_columns=["X", "Y", "Z"],
+    output_dir="output",
+    filename_prefix="predicted",
+):
+    """
+    将预测结果导出为Petrel可读的XYZ格式
+
+    参数:
+        prediction_results (DataFrame): 包含预测结果的数据框
+        coords_columns (list): 坐标列名称
+        output_dir (str): 输出目录
+        filename_prefix (str): 输出文件名前缀
+    """
+    petrel_output_file = os.path.join(output_dir, f"{filename_prefix}_sand_thickness_petrel.txt")
+    with open(petrel_output_file, "w") as f:
+        # 写入标题
+        f.write("# 砂厚预测结果\n")
+        f.write(f"# {' '.join(coords_columns)} Predicted_Sand_Thickness\n")
+
+        # 写入数据
+        for _, row in prediction_results.iterrows():
+            coords = " ".join([f"{row[col]:.6f}" for col in coords_columns])
+            f.write(f"{coords} {row['Predicted_Sand_Thickness']:.6f}\n")
+
+    print(f"预测结果已保存为Petrel可导入的XYZ格式: {petrel_output_file}")
