@@ -1,16 +1,121 @@
 import os
+import random
 
 import matplotlib.pyplot as plt
 import numpy as np
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
 
+def group_features_by_correlation(data, feature_columns, correlation_threshold=0.85, verbose=True):
+    """
+    基于特征间相关性对特征进行分组
+
+    参数:
+        data (DataFrame): 包含特征的数据框
+        feature_columns (list): 特征列名列表
+        correlation_threshold (float): 相关性阈值，用于分组
+        verbose (bool): 是否打印详细信息
+
+    返回:
+        list: 特征分组列表，每个元素是一个组（包含特征名的列表）
+    """
+    if verbose:
+        print("=== 基于全体地震数据的特征相关性分析和分组 ===")
+
+    # 提取特征数据并去除缺失值
+    feature_data = data[feature_columns].dropna()
+
+    if len(feature_data) == 0:
+        print("警告: 去除缺失值后没有可用数据")
+        return [[feature] for feature in feature_columns]
+
+    # 计算特征间的相关性矩阵
+    correlation_matrix = feature_data.corr(method="pearson").abs()  # 使用绝对值
+
+    if verbose:
+        print(f"使用 {len(feature_data)} 个地震样本点计算 {len(feature_columns)} 个特征的相关性矩阵")
+
+    # 转换相关性矩阵为距离矩阵（1 - |correlation|）
+    distance_matrix = 1 - correlation_matrix
+
+    # 使用层次聚类进行特征分组
+    # 距离阈值 = 1 - correlation_threshold
+    distance_threshold = 1 - correlation_threshold
+
+    clustering = AgglomerativeClustering(
+        n_clusters=None, distance_threshold=distance_threshold, metric="precomputed", linkage="average"
+    )
+
+    cluster_labels = clustering.fit_predict(distance_matrix)
+
+    # 根据聚类结果分组
+    feature_groups = {}
+    for i, feature in enumerate(feature_columns):
+        group_id = cluster_labels[i]
+        if group_id not in feature_groups:
+            feature_groups[group_id] = []
+        feature_groups[group_id].append(feature)
+
+    # 转换为列表格式
+    groups = list(feature_groups.values())
+
+    if verbose:
+        print(f"\n特征分组结果（相关性阈值={correlation_threshold}）:")
+        print(f"总共分成 {len(groups)} 组")
+        for i, group in enumerate(groups):
+            print(f"  组 {i + 1}: {len(group)} 个特征")
+            for feature in group:
+                print(f"    - {feature}")
+
+        # 显示组内相关性统计
+        print(f"\n各组内特征相关性统计:")
+        for i, group in enumerate(groups):
+            if len(group) > 1:
+                group_corrs = []
+                for j in range(len(group)):
+                    for k in range(j + 1, len(group)):
+                        corr = correlation_matrix.loc[group[j], group[k]]
+                        group_corrs.append(corr)
+                print(f"  组 {i + 1}: 平均相关性 {np.mean(group_corrs):.3f}, 最大相关性 {np.max(group_corrs):.3f}")
+            else:
+                print(f"  组 {i + 1}: 单个特征，无组内相关性")
+
+    return groups, correlation_matrix
+
+
+def select_features_from_groups(feature_groups, selected_group_indices, random_seed=None):
+    """
+    从选定的特征组中随机选择特征
+
+    参数:
+        feature_groups: 特征分组列表
+        selected_group_indices: 选定的组索引
+        random_seed: 随机种子
+
+    返回:
+        list: 选择的特征列表
+    """
+    if random_seed is not None:
+        random.seed(random_seed)
+
+    selected_features = []
+    for group_idx in selected_group_indices:
+        group = feature_groups[group_idx]
+        if len(group) == 1:
+            selected_features.append(group[0])
+        else:
+            selected_features.append(random.choice(group))
+
+    return selected_features
+
+
 def select_best_features(
     well_data,
     attribute_columns,
-    target_column="Thickness of facies(1: Fine sand)",
+    target_column="Sand Thickness",
     n_features=5,
     corr_threshold=0.85,
     test_size=0.3,

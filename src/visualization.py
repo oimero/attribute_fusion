@@ -215,9 +215,7 @@ def visualize_attribute_map(
     plt.show()
     plt.close()
 
-    # 拆分为两张直方图：属性分布和井点分布
-
-    # 1. 绘制属性值的直方图
+    # 绘制属性值的直方图
     plt.figure(figsize=(12, 6))
     plt.hist(data_points[attribute_name], bins=50, alpha=0.7, color="blue", label=f"{attribute_label}")
 
@@ -587,4 +585,3 @@ def visualize_pca_clustering(
         plt.show()
     else:
         print("PCA特征维度小于2，无法在二维空间可视化")
-
