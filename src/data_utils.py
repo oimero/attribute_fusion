@@ -173,10 +173,11 @@ def preprocess_features(
     missing_threshold=0.6,
     outlier_method="iqr",
     outlier_threshold=1.5,
+    outlier_treatment="clip",  # 新增：离群值处理方式
     verbose=True,
 ):
     """
-    预处理特征数据，包括缺失值处理、异常值替换和特征筛选
+    预处理特征数据，包括缺失值处理、异常值检测与处理和特征筛选
 
     参数:
         data (DataFrame): 包含特征的数据框
@@ -185,137 +186,316 @@ def preprocess_features(
         missing_threshold (float): 缺失值占比阈值，超过此值的列将被删除，默认为0.6 (60%)
         outlier_method (str): 离群值检测方法，可选 'iqr'(四分位距) 或 'zscore'(标准分数)
         outlier_threshold (float): 离群值判定阈值，默认为1.5 (IQR方法) 或 3.0 (Z-score方法)
+        outlier_treatment (str): 离群值处理方式
+                               - 'clip': 边界截断（推荐）
+                               - 'median': 替换为中位数
+                               - 'mean': 替换为均值（基于非离群值计算）
+                               - 'remove': 删除离群值行（慎用，会减少样本）
         verbose (bool): 是否打印详细信息，默认为True
 
     返回:
-        tuple: (处理后的特征数据框, 统计信息字典)
+        tuple: (处理后的特征数据框, 统计信息字典, 处理报告字典)
     """
-    # 提取特征
-    features = data[attribute_columns].copy()
-
-    # 替换缺失值
-    for val in missing_values:
-        features = features.replace(val, np.nan)
 
     if verbose:
-        print(f"处理前特征: {features.shape}")
+        print("=" * 60)
+        print("开始特征预处理")
+        print("=" * 60)
 
-    # 检查缺失值情况
+    # 提取特征
+    features = data[attribute_columns].copy()
+    original_shape = features.shape
+
+    # 初始化处理报告
+    processing_report = {
+        "original_shape": original_shape,
+        "missing_value_replacements": {},
+        "columns_removed_missing": [],
+        "outlier_processing": {},
+        "final_shape": None,
+        "data_quality_summary": {},
+    }
+
+    if verbose:
+        print(f"原始数据形状: {original_shape}")
+
+    # ================== 第一步: 缺失值识别与替换 ==================
+    if verbose:
+        print(f"\n第一步: 处理缺失值标记 {missing_values}")
+
+    missing_replacement_count = 0
+    for val in missing_values:
+        count_replaced = (features == val).sum().sum()
+        missing_replacement_count += count_replaced
+        features = features.replace(val, np.nan)
+        processing_report["missing_value_replacements"][val] = count_replaced
+
+    if verbose:
+        print(f"  替换了 {missing_replacement_count} 个标记为缺失值的数据点")
+
+    # ================== 第二步: 缺失值分析与列筛选 ==================
+    if verbose:
+        print(f"\n第二步: 缺失值分析与列筛选")
+
     missing_per_column = features.isna().sum()
     missing_ratio_per_column = missing_per_column / len(features)
 
     if verbose:
-        print("\n每列缺失值情况:")
+        print(f"  缺失值阈值: {missing_threshold * 100}%")
+        print(f"  各列缺失值情况:")
 
     # 根据缺失值阈值筛选列
     high_missing_cols = []
     for col, missing_ratio in missing_ratio_per_column.items():
         if verbose:
-            print(f"  - {col}: {missing_per_column[col]} ({missing_ratio * 100:.2f}%)")
+            print(f"    - {col}: {missing_per_column[col]} / {len(features)} ({missing_ratio * 100:.2f}%)")
 
         if missing_ratio >= missing_threshold:
             high_missing_cols.append(col)
 
     if high_missing_cols:
         if verbose:
-            print(f"\n删除以下缺失值比例 >= {missing_threshold * 100}% 的列: {high_missing_cols}")
+            print(f"\n  删除缺失值比例 >= {missing_threshold * 100}% 的列:")
+            for col in high_missing_cols:
+                print(f"    - {col} ({missing_ratio_per_column[col] * 100:.2f}%)")
+
         features = features.drop(columns=high_missing_cols)
+        processing_report["columns_removed_missing"] = high_missing_cols
+    else:
+        if verbose:
+            print(f"  无需删除列（所有列缺失值比例 < {missing_threshold * 100}%）")
 
-    # 存储每个特征的统计信息
+    # ================== 第三步: 逐列离群值检测与处理 ==================
+    if verbose:
+        print(f"\n第三步: 离群值检测与处理")
+        print(f"  检测方法: {outlier_method}")
+        print(f"  阈值: {outlier_threshold}")
+        print(f"  处理方式: {outlier_treatment}")
+
     feature_stats = {}
+    total_outliers_processed = 0
 
-    # 处理剩余列中的缺失值和离群值
     for col in features.columns:
-        # 获取有效值
+        if verbose:
+            print(f"\n  处理属性: {col}")
+
+        # 获取有效值（非NaN）
         valid_data = features[col].dropna()
 
         if len(valid_data) == 0:
             if verbose:
-                print(f"警告: 属性 '{col}' 没有有效数据，将使用0填充")
+                print(f"    警告: 无有效数据，使用0填充")
             features[col] = features[col].fillna(0)
-            feature_stats[col] = {"mean": 0.0, "std": 1.0, "median": 0.0, "q1": 0.0, "q3": 0.0}
+            feature_stats[col] = {
+                "mean": 0.0,
+                "std": 1.0,
+                "median": 0.0,
+                "q1": 0.0,
+                "q3": 0.0,
+                "outliers_detected": 0,
+                "outliers_processed": 0,
+            }
             continue
 
-        # 检测并处理离群值
+        # ================== 离群值检测 ==================
         if outlier_method == "iqr":
-            # 使用IQR方法识别离群值
+            # IQR方法检测离群值
             q1 = valid_data.quantile(0.25)
             q3 = valid_data.quantile(0.75)
             iqr = q3 - q1
             lower_bound = q1 - outlier_threshold * iqr
             upper_bound = q3 + outlier_threshold * iqr
 
-            # 筛选非离群数据
+            # 识别离群值
+            outlier_mask = (features[col] < lower_bound) | (features[col] > upper_bound)
+            # 排除NaN值
+            outlier_mask = outlier_mask & ~features[col].isna()
+
+            # 筛选非离群数据用于统计
             clean_data = valid_data[(valid_data >= lower_bound) & (valid_data <= upper_bound)]
 
-            # 存储统计信息
-            feature_stats[col] = {
-                "mean": clean_data.mean(),
-                "std": clean_data.std(),
-                "median": clean_data.median(),
-                "q1": q1,
-                "q3": q3,
-                "lower_bound": lower_bound,
-                "upper_bound": upper_bound,
-            }
+            # 存储边界信息
+            bounds = {"lower_bound": lower_bound, "upper_bound": upper_bound, "method": "iqr"}
 
         elif outlier_method == "zscore":
-            # 使用Z-score方法识别离群值
+            # Z-score方法检测离群值
             mean = valid_data.mean()
             std = valid_data.std()
 
             if std < 1e-10:
                 std = 1.0
                 if verbose:
-                    print(f"警告: 属性 '{col}' 标准差接近零，已设为1.0")
+                    print(f"    警告: 标准差接近零，已设为1.0")
 
             z_scores = np.abs((valid_data - mean) / std)
             clean_data = valid_data[z_scores <= outlier_threshold]
 
-            # 存储统计信息
-            feature_stats[col] = {
-                "mean": clean_data.mean(),
-                "std": clean_data.std(),
-                "median": clean_data.median(),
-                "mean_with_outliers": mean,
-                "std_with_outliers": std,
-            }
+            # 计算边界
+            lower_bound = mean - outlier_threshold * std
+            upper_bound = mean + outlier_threshold * std
+
+            # 识别离群值
+            outlier_mask = np.abs((features[col] - mean) / std) > outlier_threshold
+            # 排除NaN值
+            outlier_mask = outlier_mask & ~features[col].isna()
+
+            # 存储边界信息
+            bounds = {"lower_bound": lower_bound, "upper_bound": upper_bound, "method": "zscore"}
 
         else:
             raise ValueError(f"不支持的离群值检测方法: {outlier_method}，请使用 'iqr' 或 'zscore'")
 
-        # 检查是否有缺失值需要填充
-        if features[col].isna().any():
-            # 使用清理后的数据计算填充值
-            fill_value = clean_data.mean()
+        # 统计离群值数量
+        n_outliers = outlier_mask.sum()
 
-            # 检查填充值是否有效
+        if verbose:
+            print(f"    有效数据: {len(valid_data)} 个")
+            print(f"    检测到离群值: {n_outliers} 个")
+            if n_outliers > 0:
+                print(f"    边界范围: [{lower_bound:.4f}, {upper_bound:.4f}]")
+
+        # ================== 离群值处理 ==================
+        outliers_processed = 0
+        if n_outliers > 0:
+            if outlier_treatment == "clip":
+                # 边界截断：将超出边界的值设为边界值
+                original_values = features.loc[outlier_mask, col].copy()
+                features.loc[features[col] < lower_bound, col] = lower_bound
+                features.loc[features[col] > upper_bound, col] = upper_bound
+                outliers_processed = n_outliers
+
+                if verbose:
+                    print(f"    处理方式: 边界截断到 [{lower_bound:.4f}, {upper_bound:.4f}]")
+
+            elif outlier_treatment == "median":
+                # 用非离群值的中位数替换
+                fill_value = clean_data.median()
+                if pd.isna(fill_value):
+                    fill_value = valid_data.median()
+                features.loc[outlier_mask, col] = fill_value
+                outliers_processed = n_outliers
+
+                if verbose:
+                    print(f"    处理方式: 替换为中位数 {fill_value:.4f}")
+
+            elif outlier_treatment == "mean":
+                # 用非离群值的均值替换
+                fill_value = clean_data.mean()
+                if pd.isna(fill_value):
+                    fill_value = valid_data.mean()
+                features.loc[outlier_mask, col] = fill_value
+                outliers_processed = n_outliers
+
+                if verbose:
+                    print(f"    处理方式: 替换为均值 {fill_value:.4f}")
+
+            elif outlier_treatment == "remove":
+                # 删除包含离群值的行（需要谨慎使用）
+                features = features[~outlier_mask]
+                outliers_processed = n_outliers
+
+                if verbose:
+                    print(f"    处理方式: 删除 {n_outliers} 个离群值行")
+                    print(f"    数据形状变为: {features.shape}")
+            else:
+                raise ValueError(f"不支持的离群值处理方式: {outlier_treatment}")
+
+        # ================== 缺失值填充 ==================
+        missing_count = features[col].isna().sum()
+        if missing_count > 0:
+            # 使用清理后的数据计算填充值
+            fill_value = clean_data.mean() if len(clean_data) > 0 else valid_data.mean()
+
+            # 检查填充值有效性
             if pd.isna(fill_value):
                 if verbose:
-                    print(f"警告: 属性 '{col}' 的计算填充值为NaN，将使用原始数据的中位数")
-                fill_value = valid_data.median()
-                if pd.isna(fill_value):
-                    if verbose:
-                        print(f"警告: 属性 '{col}' 的中位数仍为NaN，将使用0")
-                    fill_value = 0
+                    print(f"    警告: 计算的填充值为NaN，使用0")
+                fill_value = 0
 
             # 填充缺失值
             features[col] = features[col].fillna(fill_value)
 
-            # 只打印有缺失值的属性的填充信息
             if verbose:
-                print(f"  - 属性 '{col}' 的填充值为 {fill_value:.4f}")
+                print(f"    填充 {missing_count} 个缺失值，填充值: {fill_value:.4f}")
 
+        # ================== 存储统计信息 ==================
+        final_clean_data = features[col].dropna()  # 处理后的最终数据
+
+        feature_stats[col] = {
+            "mean": final_clean_data.mean(),
+            "std": final_clean_data.std(),
+            "median": final_clean_data.median(),
+            "q1": final_clean_data.quantile(0.25),
+            "q3": final_clean_data.quantile(0.75),
+            "min": final_clean_data.min(),
+            "max": final_clean_data.max(),
+            "outliers_detected": n_outliers,
+            "outliers_processed": outliers_processed,
+            "missing_filled": missing_count,
+            "bounds": bounds,
+            "final_data_range": [final_clean_data.min(), final_clean_data.max()],
+        }
+
+        # 记录到处理报告
+        processing_report["outlier_processing"][col] = {
+            "outliers_detected": n_outliers,
+            "outliers_processed": outliers_processed,
+            "missing_filled": missing_count,
+            "bounds": bounds,
+        }
+
+        total_outliers_processed += outliers_processed
+
+    # ================== 第四步: 最终数据质量检查 ==================
     if verbose:
-        print(f"\n清理并填充后的特征形状: {features.shape}")
+        print(f"\n第四步: 最终数据质量检查")
 
-    # 最终检查是否仍有NaN值
-    if features.isna().any().any():
+    # 检查是否还有NaN值
+    remaining_nan = features.isna().sum().sum()
+    if remaining_nan > 0:
         if verbose:
-            print("警告：数据中仍然存在NaN值，将它们替换为0")
+            print(f"  警告: 仍有 {remaining_nan} 个NaN值，用0填充")
         features = features.fillna(0)
 
-    return features, feature_stats
+    # 检查是否有无穷大值
+    inf_count = np.isinf(features.select_dtypes(include=[np.number])).sum().sum()
+    if inf_count > 0:
+        if verbose:
+            print(f"  警告: 发现 {inf_count} 个无穷大值，用均值填充")
+        for col in features.columns:
+            inf_mask = np.isinf(features[col])
+            if inf_mask.any():
+                fill_value = features[col][~inf_mask].mean()
+                features.loc[inf_mask, col] = fill_value
+
+    # ================== 生成处理摘要 ==================
+    final_shape = features.shape
+    processing_report["final_shape"] = final_shape
+    processing_report["data_quality_summary"] = {
+        "total_outliers_processed": total_outliers_processed,
+        "columns_retained": len(features.columns),
+        "columns_removed": len(high_missing_cols),
+        "data_reduction": f"{((original_shape[0] - final_shape[0]) / original_shape[0] * 100):.2f}%",
+        "feature_reduction": f"{((original_shape[1] - final_shape[1]) / original_shape[1] * 100):.2f}%",
+    }
+
+    if verbose:
+        print(f"\n" + "=" * 60)
+        print("特征预处理完成")
+        print("=" * 60)
+        print(f"  原始形状: {original_shape}")
+        print(f"  最终形状: {final_shape}")
+        print(f"  删除列数: {len(high_missing_cols)}")
+        print(f"  处理离群值总数: {total_outliers_processed}")
+        print(f"  数据保留率: {(final_shape[0] / original_shape[0] * 100):.2f}%")
+        print(f"  特征保留率: {(final_shape[1] / original_shape[1] * 100):.2f}%")
+
+        if len(high_missing_cols) > 0:
+            print(f"  删除的列: {high_missing_cols}")
+
+        print("=" * 60)
+
+    return features, feature_stats, processing_report
 
 
 def filter_outlier_wells(well_data, method="iqr", distance_threshold=None):

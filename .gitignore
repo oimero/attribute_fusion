@@ -1,5 +1,7 @@
 data/*
 */data_tmp/*
-*_output/*
+*/*/data_tmp/*
 */*_output/*
+*/*/*_output/*
 src/__pycache__/*
+

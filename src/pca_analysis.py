@@ -32,8 +32,10 @@ def perform_pca_analysis(
     print("======== PCA降维分析开始 ========")
     print(f"数据集大小: {data.shape}")
 
-    # 预处理特征
-    features, _ = preprocess_features(data, attribute_columns, missing_values, verbose=False)
+    # 预处理特征 - 修改这里：接收3个返回值
+    features, feature_stats, processing_report = preprocess_features(
+        data, attribute_columns, missing_values=missing_values, verbose=False
+    )
 
     # 提取对应的坐标
     coords_clean = data[["X", "Y"]]
@@ -105,18 +107,26 @@ def perform_pca_analysis(
     print("\n主成分与原始特征的关系:")
     print(component_contributions)
 
+    # 可选：添加预处理信息到返回结果中
+    if processing_report["data_quality_summary"]["total_outliers_processed"] > 0:
+        print(f"\n数据预处理信息:")
+        print(f"  处理的离群值总数: {processing_report['data_quality_summary']['total_outliers_processed']}")
+        print(f"  特征保留率: {processing_report['data_quality_summary']['feature_reduction']}")
+
     print("======== PCA降维分析完成 ========")
 
-    # 返回结果 - 添加缺失的键
+    # 返回结果
     return {
         "pca": pca_final,  # 使用最终的PCA模型
         "scaler": scaler,
-        "features_scaled": features_scaled,  # 添加标准化后的特征
+        "features_scaled": features_scaled,  # 标准化后的特征
         "n_components": n_components,
         "component_contributions": component_contributions,
         "features_clean": features,
         "features_pca": features_pca,
         "coords_clean": coords_clean,
-        "explained_variance_ratio": pca_final.explained_variance_ratio_,  # 添加解释方差比
-        "explained_variance_ratio_cumsum": np.cumsum(pca_final.explained_variance_ratio_),  # 添加累积解释方差比
+        "explained_variance_ratio": pca_final.explained_variance_ratio_,
+        "explained_variance_ratio_cumsum": np.cumsum(pca_final.explained_variance_ratio_),
+        "feature_stats": feature_stats,  # 添加特征统计信息
+        "processing_report": processing_report,  # 添加处理报告
     }
