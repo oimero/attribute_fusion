@@ -130,3 +130,117 @@ def perform_pca_analysis(
         "feature_stats": feature_stats,  # 添加特征统计信息
         "processing_report": processing_report,  # 添加处理报告
     }
+
+
+def visualize_pca_clustering(
+    features_pca,
+    cluster_labels,
+    n_clusters,
+    output_dir="output",
+    prefix="",
+    well_data=None,
+    well_pca_features=None,
+    target_column="Sand Thickness",
+    class_thresholds=[1, 13.75],
+):
+    """
+    在PCA空间中可视化GMM聚类结果
+
+    参数:
+        features_pca (ndarray): PCA降维后的特征，形状为(n_samples, n_components)
+        cluster_labels (ndarray): 聚类标签数组
+        n_clusters (int): 聚类数量
+        output_dir (str): 输出目录
+        well_data (DataFrame): 井点数据
+        well_pca_features (ndarray): 井点在PCA空间的坐标，如果为None则不显示井点
+        target_column (str): 井点目标列
+        class_thresholds (list): 分类阈值
+
+    返回:
+        None
+    """
+
+    # 文件名前缀
+    file_prefix = f"{n_clusters}_clusters_"
+
+    # 仅当特征维度大于等于2时才可视化
+    if features_pca.shape[1] >= 2:
+        plt.figure(figsize=(12, 10))
+
+        # 创建颜色映射，确保聚类颜色清晰区分
+        unique_clusters = sorted(np.unique(cluster_labels))
+        colors = plt.cm.viridis(np.linspace(0, 1, n_clusters))
+
+        # 为每个聚类单独绘制散点图
+        for cluster in unique_clusters:
+            mask = cluster_labels == cluster
+            plt.scatter(
+                features_pca[mask, 0],
+                features_pca[mask, 1],
+                label=f"聚类 {cluster}",
+                s=30,
+                alpha=0.5,
+            )
+
+        # 如果提供了井点在PCA空间的坐标，将井点添加到图中
+        if well_data is not None and well_pca_features is not None and target_column in well_data.columns:
+            # 根据目标值分类
+            low_indices = well_data[well_data[target_column] < class_thresholds[0]].index
+            medium_indices = well_data[
+                (well_data[target_column] >= class_thresholds[0]) & (well_data[target_column] <= class_thresholds[1])
+            ].index
+            high_indices = well_data[well_data[target_column] > class_thresholds[1]].index
+
+            # 绘制不同类别的井点
+            if len(low_indices) > 0:
+                plt.scatter(
+                    well_pca_features[low_indices, 0],
+                    well_pca_features[low_indices, 1],
+                    color="#FF5733",  # 红橙色
+                    s=100,
+                    marker="^",
+                    edgecolors="white",
+                    linewidth=1.5,
+                    zorder=10,
+                    label=f"井点：实际值<{class_thresholds[0]}",
+                )
+
+            if len(medium_indices) > 0:
+                plt.scatter(
+                    well_pca_features[medium_indices, 0],
+                    well_pca_features[medium_indices, 1],
+                    color="#FFFF00",  # 黄色
+                    s=100,
+                    marker="^",
+                    edgecolors="white",
+                    linewidth=1.5,
+                    zorder=10,
+                    label=f"井点：实际值({class_thresholds[0]}-{class_thresholds[1]})",
+                )
+
+            if len(high_indices) > 0:
+                plt.scatter(
+                    well_pca_features[high_indices, 0],
+                    well_pca_features[high_indices, 1],
+                    color="#FF00FF",  # 品红色
+                    s=100,
+                    marker="^",
+                    edgecolors="white",
+                    linewidth=1.5,
+                    zorder=10,
+                    label=f"井点：实际值>{class_thresholds[1]}",
+                )
+
+        plt.title(f"PCA空间中的聚类分布 (聚类数={n_clusters})")
+        plt.xlabel("主成分1")
+        plt.ylabel("主成分2")
+        plt.legend(loc="best")
+        plt.grid(True, alpha=0.3)
+        plt.savefig(
+            os.path.join(output_dir, f"{file_prefix}pca_gmm_projection.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.show()
+    else:
+        print("PCA特征维度小于2，无法在二维空间可视化")

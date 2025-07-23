@@ -294,6 +294,296 @@ def perform_gmm_clustering(
     }
 
 
+def visualize_gmm_clustering(
+    clustering_results,
+    output_dir="output",
+    prefix="",
+    well_data=None,
+    target_column="Sand Thickness",
+    class_thresholds=[1, 13.75],
+    point_size=30,
+    well_size=100,
+    use_probability_colors=True,  # 新增参数：是否使用概率混合颜色
+):
+    """
+    在地理空间中可视化GMM聚类结果，支持基于概率的颜色混合
+
+    参数:
+        clustering_results (dict): perform_gmm_clustering函数的返回结果
+        output_dir (str): 输出目录
+        prefix (str): 文件名前缀
+        well_data (DataFrame): 井点数据
+        target_column (str): 井点目标列
+        class_thresholds (list): 分类阈值
+        point_size (int): 聚类点大小
+        well_size (int): 井点大小
+        use_probability_colors (bool): 是否使用概率混合颜色，默认为True
+
+    返回:
+        None
+    """
+    # 从聚类结果中提取数据
+    result_df = clustering_results["result_df"]
+    cluster_labels = clustering_results["cluster_labels"]
+    cluster_probs = clustering_results["cluster_probs"]  # 概率矩阵 (n_samples, n_clusters)
+    n_clusters = len(clustering_results["cluster_counts"])
+
+    # 文件名前缀
+    file_prefix = f"{n_clusters}_clusters_{prefix}_" if prefix else f"{n_clusters}_clusters_"
+
+    # 创建两个子图：一个用传统方式，一个用概率混合颜色
+    fig, axes = plt.subplots(1, 2, figsize=(20, 8))
+
+    # 创建基础颜色映射
+    base_colors = plt.cm.Set1(np.linspace(0, 1, n_clusters))[:, :3]  # 只取RGB，不要alpha通道
+
+    # 确保颜色数量足够
+    if n_clusters > len(base_colors):
+        base_colors = plt.cm.viridis(np.linspace(0, 1, n_clusters))[:, :3]
+
+    # === 子图1: 传统的离散聚类颜色 ===
+    ax1 = axes[0]
+
+    # 为每个聚类单独绘制散点图
+    unique_clusters = sorted(np.unique(cluster_labels))
+    for cluster in unique_clusters:
+        mask = result_df["Cluster"] == cluster
+        ax1.scatter(
+            result_df.loc[mask, "X"],
+            result_df.loc[mask, "Y"],
+            c=[base_colors[cluster]],
+            label=f"聚类 {cluster}",
+            s=point_size,
+            alpha=0.85,
+            edgecolors="black",
+            linewidth=0.3,
+        )
+
+    ax1.set_title(f"传统聚类可视化 (聚类数={n_clusters})", fontsize=14)
+    ax1.set_xlabel("X坐标", fontsize=12)
+    ax1.set_ylabel("Y坐标", fontsize=12)
+    ax1.grid(True, alpha=0.3, linestyle="--")
+
+    # === 子图2: 基于概率的混合颜色 ===
+    ax2 = axes[1]
+
+    if use_probability_colors and cluster_probs is not None:
+        # 计算每个样本的混合颜色
+        mixed_colors = np.zeros((len(cluster_probs), 3))  # RGB颜色矩阵
+
+        for i in range(len(cluster_probs)):
+            # 对每个样本，根据概率加权混合颜色
+            sample_color = np.zeros(3)  # RGB
+            for cluster_idx in range(n_clusters):
+                prob = cluster_probs[i, cluster_idx]
+                cluster_color = base_colors[cluster_idx]
+                sample_color += prob * cluster_color
+
+            # 归一化颜色值到[0,1]范围
+            mixed_colors[i] = np.clip(sample_color, 0, 1)
+
+        # 绘制混合颜色的散点图
+        ax2.scatter(
+            result_df["X"],
+            result_df["Y"],
+            c=mixed_colors,
+            s=point_size,
+            alpha=0.85,
+            edgecolors="black",
+            linewidth=0.3,
+        )
+
+        # 添加概率信息到标题
+        ax2.set_title(f"概率混合颜色可视化 (聚类数={n_clusters})", fontsize=14)
+
+        # 添加颜色参考图例（显示纯聚类颜色）
+        for cluster in unique_clusters:
+            ax2.scatter([], [], c=[base_colors[cluster]], s=100, label=f"聚类 {cluster} (纯色)", alpha=0.8)
+
+    else:
+        # 如果不使用概率颜色或概率数据不可用，使用传统方式
+        for cluster in unique_clusters:
+            mask = result_df["Cluster"] == cluster
+            ax2.scatter(
+                result_df.loc[mask, "X"],
+                result_df.loc[mask, "Y"],
+                c=[base_colors[cluster]],
+                label=f"聚类 {cluster}",
+                s=point_size,
+                alpha=0.85,
+                edgecolors="black",
+                linewidth=0.3,
+            )
+        ax2.set_title(f"标准聚类可视化 (聚类数={n_clusters})", fontsize=14)
+
+    ax2.set_xlabel("X坐标", fontsize=12)
+    ax2.set_ylabel("Y坐标", fontsize=12)
+    ax2.grid(True, alpha=0.3, linestyle="--")
+
+    # === 在两个子图上都添加井点数据 ===
+    for ax in [ax1, ax2]:
+        if well_data is not None and target_column in well_data.columns:
+            # 根据目标值分类
+            low_class = well_data[well_data[target_column] < class_thresholds[0]]
+            medium_class = well_data[
+                (well_data[target_column] >= class_thresholds[0]) & (well_data[target_column] <= class_thresholds[1])
+            ]
+            high_class = well_data[well_data[target_column] > class_thresholds[1]]
+
+            # 绘制不同类别的井点
+            if len(low_class) > 0:
+                ax.scatter(
+                    low_class["X"],
+                    low_class["Y"],
+                    color="#FF5733",  # 红橙色
+                    s=well_size,
+                    marker="^",
+                    edgecolors="white",
+                    linewidth=1.5,
+                    zorder=10,
+                    label=f"井点：实际值<{class_thresholds[0]}",
+                )
+
+            if len(medium_class) > 0:
+                ax.scatter(
+                    medium_class["X"],
+                    medium_class["Y"],
+                    color="#FFFF00",  # 黄色
+                    s=well_size,
+                    marker="^",
+                    edgecolors="white",
+                    linewidth=1.5,
+                    zorder=10,
+                    label=f"井点：实际值({class_thresholds[0]}-{class_thresholds[1]})",
+                )
+
+            if len(high_class) > 0:
+                ax.scatter(
+                    high_class["X"],
+                    high_class["Y"],
+                    color="#FF00FF",  # 品红色
+                    s=well_size,
+                    marker="^",
+                    edgecolors="white",
+                    linewidth=1.5,
+                    zorder=10,
+                    label=f"井点：实际值>{class_thresholds[1]}",
+                )
+
+        # 添加图例
+        ax.legend(loc="best", framealpha=0.9, fontsize=9)
+
+    # 调整布局
+    plt.tight_layout()
+
+    # 保存图像
+    save_name = (
+        f"{file_prefix}gmm_spatial_comparison.png" if use_probability_colors else f"{file_prefix}gmm_spatial.png"
+    )
+    plt.savefig(
+        os.path.join(output_dir, save_name),
+        dpi=300,
+        bbox_inches="tight",
+    )
+
+    # 显示图像
+    plt.show()
+
+    # === 额外绘制：概率不确定性分析 ===
+    if use_probability_colors and cluster_probs is not None:
+        plt.figure(figsize=(15, 5))
+
+        # 子图1: 最大概率分布
+        plt.subplot(1, 3, 1)
+        max_probs = np.max(cluster_probs, axis=1)
+        scatter = plt.scatter(
+            result_df["X"],
+            result_df["Y"],
+            c=max_probs,
+            s=point_size,
+            cmap="RdYlBu_r",  # 红色表示低确定性，蓝色表示高确定性
+            alpha=0.8,
+            edgecolors="black",
+            linewidth=0.3,
+        )
+        plt.colorbar(scatter, label="最大聚类概率")
+        plt.title("聚类确定性 (最大概率)", fontsize=12)
+        plt.xlabel("X坐标")
+        plt.ylabel("Y坐标")
+        plt.grid(True, alpha=0.3)
+
+        # 子图2: 熵（不确定性）
+        plt.subplot(1, 3, 2)
+        # 计算每个样本的概率分布熵
+        entropy = -np.sum(cluster_probs * np.log(cluster_probs + 1e-10), axis=1)
+        scatter = plt.scatter(
+            result_df["X"],
+            result_df["Y"],
+            c=entropy,
+            s=point_size,
+            cmap="viridis",
+            alpha=0.8,
+            edgecolors="black",
+            linewidth=0.3,
+        )
+        plt.colorbar(scatter, label="概率分布熵")
+        plt.title("聚类不确定性 (熵)", fontsize=12)
+        plt.xlabel("X坐标")
+        plt.ylabel("Y坐标")
+        plt.grid(True, alpha=0.3)
+
+        # 子图3: 概率分布直方图
+        plt.subplot(1, 3, 3)
+        plt.hist(max_probs, bins=30, alpha=0.7, color="skyblue", edgecolor="black")
+        plt.axvline(np.mean(max_probs), color="red", linestyle="--", label=f"平均最大概率: {np.mean(max_probs):.3f}")
+        plt.xlabel("最大聚类概率")
+        plt.ylabel("样本数量")
+        plt.title("最大概率分布统计")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(output_dir, f"{file_prefix}gmm_probability_analysis.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.show()
+
+        # 打印概率统计信息
+        print(f"\n======== 聚类概率统计 ========")
+        print(f"平均最大概率: {np.mean(max_probs):.3f}")
+        print(f"最大概率标准差: {np.std(max_probs):.3f}")
+        print(f"平均熵: {np.mean(entropy):.3f}")
+        print(
+            f"高确定性样本 (最大概率>0.8): {np.sum(max_probs > 0.8)} ({np.sum(max_probs > 0.8) / len(max_probs) * 100:.1f}%)"
+        )
+        print(
+            f"低确定性样本 (最大概率<0.6): {np.sum(max_probs < 0.6)} ({np.sum(max_probs < 0.6) / len(max_probs) * 100:.1f}%)"
+        )
+
+    # 绘制聚类数量分布（保持原有功能）
+    plt.figure(figsize=(10, 6))
+    ax = clustering_results["cluster_counts"].plot(kind="bar", color=base_colors[:n_clusters])
+
+    # 在每个柱子上标注数量和百分比
+    total = clustering_results["cluster_counts"].sum()
+    for i, v in enumerate(clustering_results["cluster_counts"]):
+        ax.text(i, v + 0.1, f"{v} ({v / total * 100:.1f}%)", ha="center", fontweight="bold")
+
+    plt.title(f"各聚类样本数量分布 (聚类数={n_clusters})")
+    plt.xlabel("聚类")
+    plt.ylabel("样本数量")
+    plt.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(output_dir, f"{file_prefix}gmm_cluster_counts.png"),
+        dpi=300,
+        bbox_inches="tight",
+    )
+    plt.show()
+
+
 # deprecated
 def augment_samples_by_pca_mixing(
     well_data,
