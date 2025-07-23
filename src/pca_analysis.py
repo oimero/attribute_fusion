@@ -3,7 +3,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, KernelPCA
 from sklearn.preprocessing import StandardScaler
 
 from src.data_utils import preprocess_features
@@ -129,6 +129,71 @@ def perform_pca_analysis(
         "explained_variance_ratio_cumsum": np.cumsum(pca_final.explained_variance_ratio_),
         "feature_stats": feature_stats,  # 添加特征统计信息
         "processing_report": processing_report,  # 添加处理报告
+    }
+
+
+def perform_kpca_analysis(
+    data,
+    attribute_columns,
+    n_components=2,
+    kernel="rbf",
+    gamma=None,
+    output_dir="output",
+    missing_values=[-999],
+):
+    """
+    对地震属性数据进行核PCA (KPCA) 降维分析
+
+    参数:
+        data (DataFrame): 包含地震属性的数据框
+        attribute_columns (list): 需要进行分析的属性列名列表
+        n_components (int): 要保留的主成分数量，默认为2
+        kernel (str): 使用的核函数 ('rbf', 'poly', 'sigmoid', 'cosine')
+        gamma (float): RBF核的核系数，如果为None，则自动计算
+        output_dir (str): 输出图表的目录
+        missing_values (list): 缺失值标记
+
+    返回:
+        dict: 包含KPCA分析结果的字典
+    """
+    print("======== 核PCA (KPCA) 降维分析开始 ========")
+    print(f"数据集大小: {data.shape}")
+    print(f"核函数: {kernel}, 目标维度: {n_components}")
+
+    # 预处理特征 (与PCA使用相同的流程)
+    features, feature_stats, processing_report = preprocess_features(
+        data, attribute_columns, missing_values=missing_values, verbose=False
+    )
+
+    # 标准化
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(features)
+
+    # 应用KPCA
+    kpca = KernelPCA(
+        n_components=n_components,
+        kernel=kernel,
+        gamma=gamma,
+        random_state=42,
+        n_jobs=-1,  # 使用所有可用的CPU核心
+    )
+    features_kpca = kpca.fit_transform(features_scaled)
+    print(f"KPCA降维后的特征形状: {features_kpca.shape}")
+
+    # 注意：KPCA没有像线性PCA那样直观的“成分贡献度”或“解释方差比”。
+    # 其主要优势在于捕捉非线性结构，而不是提供可解释的线性组合。
+    print("注意: KPCA不提供类似PCA的直接载荷解释。")
+    print("======== 核PCA (KPCA) 降维分析完成 ========")
+
+    # 返回结果
+    return {
+        "kpca": kpca,
+        "scaler": scaler,
+        "features_scaled": features_scaled,
+        "n_components": n_components,
+        "features_kpca": features_kpca,
+        "kernel": kernel,
+        "gamma": kpca.gamma_,  # 返回实际使用的gamma值
     }
 
 

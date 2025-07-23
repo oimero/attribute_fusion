@@ -170,14 +170,14 @@ def evaluate_gmm_clusters(features_for_clustering, max_clusters=10, output_dir="
 聚类数评估摘要
 
 肘部法则结果:
-• BIC肘部点: {bic_elbow}
-• AIC肘部点: {aic_elbow}
-• LogLikelihood肘部点: {ll_elbow}
-• 肘部共识: {elbow_consensus} (一致性: {elbow_agreement:.1%})
+- BIC肘部点: {bic_elbow}
+- AIC肘部点: {aic_elbow}
+- LogLikelihood肘部点: {ll_elbow}
+- 肘部共识: {elbow_consensus} (一致性: {elbow_agreement:.1%})
 
 最优值结果:
-• BIC最小值点: {min_bic_n}
-• AIC最小值点: {min_aic_n}
+- BIC最小值点: {min_bic_n}
+- AIC最小值点: {min_aic_n}
 
 最终推荐:
 聚类数 = {recommended_n}
