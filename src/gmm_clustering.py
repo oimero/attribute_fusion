@@ -6,25 +6,29 @@ import pandas as pd
 from sklearn.mixture import GaussianMixture
 
 
-def evaluate_gmm_clusters(features_pca, max_clusters=10, output_dir="output"):
+def evaluate_gmm_clusters(features_for_clustering, max_clusters=10, output_dir="output"):
     """
-    对不同聚类数的GMM模型进行评估，绘制BIC和AIC曲线
+    对不同聚类数的GMM模型进行评估，使用肘部法则确定最佳聚类数
 
     参数:
-        features_pca (ndarray): PCA降维后的特征矩阵
+        features_for_clustering (ndarray): 用于聚类的特征数据，形状为(n_samples, n_features)
         max_clusters (int): 最大聚类数量，默认为10
         output_dir (str): 输出图表的目录，默认为"output"
 
     返回:
         dict: 包含评估结果的字典
     """
-    print("======== GMM聚类数评估开始 ========")
+    print("======== GMM聚类数评估开始（带肘部法则）========")
+
+    print(f"特征数据形状: {features_for_clustering.shape}")
+    print(f"评估聚类数范围: 1 到 {max_clusters}")
 
     # 确定最佳GMM聚类数
     n_components_range = range(1, max_clusters + 1)
     models = []
     bic_scores = []
     aic_scores = []
+    log_likelihoods = []
 
     for n_comp in n_components_range:
         # 训练GMM模型
@@ -34,83 +38,177 @@ def evaluate_gmm_clusters(features_pca, max_clusters=10, output_dir="output"):
             random_state=42,
             n_init=10,  # 多次初始化以获得更稳定的结果
         )
-        gmm.fit(features_pca)
+        gmm.fit(features_for_clustering)
 
         # 保存模型和得分
         models.append(gmm)
-        bic_scores.append(gmm.bic(features_pca))
-        aic_scores.append(gmm.aic(features_pca))
-        print(f"聚类数量 {n_comp}: BIC = {bic_scores[-1]:.2f}, AIC = {aic_scores[-1]:.2f}")
+        bic_scores.append(gmm.bic(features_for_clustering))
+        aic_scores.append(gmm.aic(features_for_clustering))
+        log_likelihoods.append(gmm.score(features_for_clustering))
 
-    # 绘制BIC和AIC曲线
-    plt.figure(figsize=(12, 6))
+        print(
+            f"聚类数量 {n_comp}: BIC = {bic_scores[-1]:.2f}, AIC = {aic_scores[-1]:.2f}, LogLikelihood = {log_likelihoods[-1]:.2f}"
+        )
 
-    plt.subplot(1, 2, 1)
-    plt.plot(n_components_range, bic_scores, "o-", label="BIC")
-    plt.axvline(
-        np.argmin(bic_scores) + 1,
-        linestyle="--",
-        color="r",
-        label=f"最佳聚类数 = {np.argmin(bic_scores) + 1}",
-    )
+    # ========== 肘部法则计算 ==========
+    def find_elbow_point(scores, method_name):
+        """使用肘部法则找到最佳点"""
+        if len(scores) < 3:
+            return 1
+
+        # 方法1: 基于二阶差分的肘部检测
+        first_diffs = np.diff(scores)
+        second_diffs = np.diff(first_diffs)
+
+        # 对于BIC/AIC（越小越好），我们寻找下降放缓的点
+        # 对于对数似然（越大越好），我们寻找上升放缓的点
+        if method_name in ["BIC", "AIC"]:
+            # 寻找二阶差分最大的点（下降最快转为下降较慢的转折点）
+            elbow_idx = np.argmax(second_diffs) + 2  # +2因为二阶差分比原数组少2个元素
+        else:  # LogLikelihood
+            # 寻找二阶差分最小的点（上升最快转为上升较慢的转折点）
+            elbow_idx = np.argmin(second_diffs) + 2
+
+        return min(elbow_idx, len(scores))
+
+    # 计算不同方法的肘部点
+    bic_elbow = find_elbow_point(bic_scores, "BIC")
+    aic_elbow = find_elbow_point(aic_scores, "AIC")
+    ll_elbow = find_elbow_point(log_likelihoods, "LogLikelihood")
+
+    print(f"\n肘部法则检测结果:")
+    print(f"BIC肘部点: 聚类数 = {bic_elbow}")
+    print(f"AIC肘部点: 聚类数 = {aic_elbow}")
+    print(f"LogLikelihood肘部点: 聚类数 = {ll_elbow}")
+
+    # ========== 绘制评估曲线 ==========
+    plt.figure(figsize=(18, 12))
+
+    # 子图1: BIC曲线
+    plt.subplot(2, 3, 1)
+    plt.plot(n_components_range, bic_scores, "o-", label="BIC", linewidth=2)
+    plt.axvline(bic_elbow, linestyle="--", color="r", label=f"肘部点 = {bic_elbow}")
+    plt.axvline(np.argmin(bic_scores) + 1, linestyle=":", color="g", label=f"最小值 = {np.argmin(bic_scores) + 1}")
     plt.xlabel("聚类数量")
     plt.ylabel("BIC分数")
     plt.title("BIC评分曲线")
-    plt.grid(True)
+    plt.grid(True, alpha=0.3)
     plt.legend()
 
-    plt.subplot(1, 2, 2)
-    plt.plot(n_components_range, aic_scores, "o-", label="AIC")
-    plt.axvline(
-        np.argmin(aic_scores) + 1,
-        linestyle="--",
-        color="r",
-        label=f"最佳聚类数 = {np.argmin(aic_scores) + 1}",
-    )
+    # 子图2: AIC曲线
+    plt.subplot(2, 3, 2)
+    plt.plot(n_components_range, aic_scores, "o-", label="AIC", linewidth=2)
+    plt.axvline(aic_elbow, linestyle="--", color="r", label=f"肘部点 = {aic_elbow}")
+    plt.axvline(np.argmin(aic_scores) + 1, linestyle=":", color="g", label=f"最小值 = {np.argmin(aic_scores) + 1}")
     plt.xlabel("聚类数量")
     plt.ylabel("AIC分数")
     plt.title("AIC评分曲线")
-    plt.grid(True)
+    plt.grid(True, alpha=0.3)
     plt.legend()
 
+    # 子图3: 对数似然曲线
+    plt.subplot(2, 3, 3)
+    plt.plot(n_components_range, log_likelihoods, "o-", label="Log Likelihood", linewidth=2)
+    plt.axvline(ll_elbow, linestyle="--", color="r", label=f"肘部点 = {ll_elbow}")
+    plt.axvline(
+        np.argmax(log_likelihoods) + 1, linestyle=":", color="g", label=f"最大值 = {np.argmax(log_likelihoods) + 1}"
+    )
+    plt.xlabel("聚类数量")
+    plt.ylabel("Log Likelihood")
+    plt.title("对数似然曲线")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+
+    # 子图4: BIC和AIC变化率
+    if len(bic_scores) > 1:
+        bic_changes = np.diff(bic_scores)
+        aic_changes = np.diff(aic_scores)
+        ll_changes = np.diff(log_likelihoods)
+
+        plt.subplot(2, 3, 4)
+        plt.plot(range(2, max_clusters + 1), bic_changes, "o-", label="BIC变化")
+        plt.plot(range(2, max_clusters + 1), aic_changes, "s-", label="AIC变化")
+        plt.axhline(y=0, linestyle="--", color="gray", alpha=0.5)
+        plt.xlabel("聚类数量")
+        plt.ylabel("分数变化")
+        plt.title("BIC和AIC变化率")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        # 子图5: 对数似然变化率
+        plt.subplot(2, 3, 5)
+        plt.plot(range(2, max_clusters + 1), ll_changes, "^-", label="LogLikelihood变化", color="green")
+        plt.axhline(y=0, linestyle="--", color="gray", alpha=0.5)
+        plt.xlabel("聚类数量")
+        plt.ylabel("似然变化")
+        plt.title("对数似然变化率")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+    # 子图6: 综合评估摘要
+    plt.subplot(2, 3, 6)
+    plt.axis("off")
+
+    # 综合决策：优先考虑肘部法则，然后考虑最小值
+    elbow_votes = [bic_elbow, aic_elbow, ll_elbow]
+    elbow_consensus = max(set(elbow_votes), key=elbow_votes.count)  # 众数
+
+    min_bic_n = np.argmin(bic_scores) + 1
+    min_aic_n = np.argmin(aic_scores) + 1
+
+    # 最终推荐：如果肘部点一致性较高，使用肘部点；否则使用BIC最小值
+    elbow_agreement = elbow_votes.count(elbow_consensus) / len(elbow_votes)
+
+    if elbow_agreement >= 0.6:  # 60%以上一致性
+        recommended_n = elbow_consensus
+        recommendation_reason = f"肘部法则共识({elbow_agreement:.1%}一致)"
+    else:
+        recommended_n = min_bic_n
+        recommendation_reason = "BIC最小值(肘部法则不一致时的备选)"
+
+    summary_text = f"""
+聚类数评估摘要
+
+肘部法则结果:
+• BIC肘部点: {bic_elbow}
+• AIC肘部点: {aic_elbow}
+• LogLikelihood肘部点: {ll_elbow}
+• 肘部共识: {elbow_consensus} (一致性: {elbow_agreement:.1%})
+
+最优值结果:
+• BIC最小值点: {min_bic_n}
+• AIC最小值点: {min_aic_n}
+
+最终推荐:
+聚类数 = {recommended_n}
+推荐理由: {recommendation_reason}
+
+特征维度: {features_for_clustering.shape[1]}
+数据点数: {len(features_for_clustering):,}
+    """
+
+    plt.text(
+        0.05,
+        0.95,
+        summary_text,
+        transform=plt.gca().transAxes,
+        fontsize=11,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.8),
+    )
+
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "gmm_bic_aic.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(os.path.join(output_dir, "gmm_clustering_evaluation_with_elbow.png"), dpi=300, bbox_inches="tight")
     plt.show()
 
-    # 计算BIC和AIC的变化率
-    if len(bic_scores) > 1:
-        bic_changes = np.diff(bic_scores) / np.array(bic_scores[:-1])
-        aic_changes = np.diff(aic_scores) / np.array(aic_scores[:-1])
+    # 选择最佳模型
+    best_gmm = models[recommended_n - 1]
 
-        plt.figure(figsize=(12, 6))
-        plt.plot(range(2, max_clusters + 1), bic_changes, "o-", label="BIC变化率")
-        plt.plot(range(2, max_clusters + 1), aic_changes, "s-", label="AIC变化率")
-        plt.axhline(y=0, linestyle="--", color="gray")
-        plt.xlabel("聚类数量")
-        plt.ylabel("相对变化率")
-        plt.title("BIC和AIC相对变化率")
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(
-            os.path.join(output_dir, "gmm_bic_aic_changes.png"),
-            dpi=300,
-            bbox_inches="tight",
-        )
-        plt.show()
-
-        # 尝试找出变化率变化最大的点(可能的"肘部")
-        if len(bic_changes) > 1:
-            bic_elbow = np.argmax(np.abs(np.diff(bic_changes))) + 2
-            aic_elbow = np.argmax(np.abs(np.diff(aic_changes))) + 2
-            print(f"BIC变化率最大变化点: 聚类数 = {bic_elbow}")
-            print(f"AIC变化率最大变化点: 聚类数 = {aic_elbow}")
-
-    # 选择最佳模型（基于BIC）
-    best_n_components = np.argmin(bic_scores) + 1
-    best_gmm = models[best_n_components - 1]
-    print(f"\n基于BIC的最佳聚类数: {best_n_components}")
-    print(f"基于AIC的最佳聚类数: {np.argmin(aic_scores) + 1}")
-
+    print(f"\n======== 最终推荐 ========")
+    print(f"推荐聚类数: {recommended_n}")
+    print(f"推荐理由: {recommendation_reason}")
+    print(f"该聚类数的BIC: {bic_scores[recommended_n - 1]:.2f}")
+    print(f"该聚类数的AIC: {aic_scores[recommended_n - 1]:.2f}")
     print("======== GMM聚类数评估完成 ========")
 
     # 返回结果
@@ -118,8 +216,19 @@ def evaluate_gmm_clusters(features_pca, max_clusters=10, output_dir="output"):
         "models": models,
         "bic_scores": bic_scores,
         "aic_scores": aic_scores,
-        "best_n_components": best_n_components,
+        "log_likelihoods": log_likelihoods,
+        "best_n_components": recommended_n,
         "best_gmm": best_gmm,
+        "elbow_points": {
+            "bic_elbow": bic_elbow,
+            "aic_elbow": aic_elbow,
+            "ll_elbow": ll_elbow,
+            "consensus": elbow_consensus,
+            "agreement": elbow_agreement,
+        },
+        "recommendation_reason": recommendation_reason,
+        "n_features": features_for_clustering.shape[1],
+        "n_data_points": len(features_for_clustering),
     }
 
 

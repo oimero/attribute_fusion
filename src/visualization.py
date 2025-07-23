@@ -13,7 +13,7 @@ def visualize_attribute_map(
     target_column="Sand Thickness",
     output_dir="output",
     filename_prefix="attribute_map",
-    class_thresholds=[0.1, 10],
+    class_thresholds=[1, 13.75],
     figsize=(14, 14),
     dpi=300,
     cmap="viridis",
@@ -240,12 +240,15 @@ def visualize_feature_distribution(
     data,
     x_feature,
     y_feature,
+    color_feature=None,  # 新增：自定义色标特征
     figsize=(10, 6),
     point_size=50,
     alpha=0.6,
     colormap="viridis",
     title=None,
     save_path=None,
+    discrete_colors=False,  # 新增：是否使用离散颜色（适用于聚类标签）
+    color_labels=None,  # 新增：离散颜色的标签（用于图例）
 ):
     """
     通用的特征分布可视化函数
@@ -257,7 +260,9 @@ def visualize_feature_distribution(
     x_feature : str
         x轴特征名
     y_feature : str
-        y轴特征名（用作颜色映射）
+        y轴特征名
+    color_feature : str, optional
+        用作颜色映射的特征名，如果为None则使用y_feature
     figsize : tuple, default=(10, 6)
         图形大小
     point_size : int, default=50
@@ -270,6 +275,10 @@ def visualize_feature_distribution(
         图表标题，如果None则自动生成
     save_path : str, optional
         保存路径
+    discrete_colors : bool, default=False
+        是否使用离散颜色（适用于聚类标签等分类变量）
+    color_labels : dict, optional
+        离散颜色的标签映射，格式为 {value: label}
 
     Returns:
     --------
@@ -277,25 +286,86 @@ def visualize_feature_distribution(
     """
     plt.figure(figsize=figsize)
 
-    # 创建散点图，颜色表示y特征
-    scatter = plt.scatter(
-        data[x_feature],
-        data[y_feature],
-        c=data[y_feature],
-        s=point_size,
-        alpha=alpha,
-        cmap=colormap,
-        edgecolors="black",
-        linewidth=0.5,
-    )
+    # 确定用于颜色映射的特征
+    if color_feature is None:
+        color_feature = y_feature
+        color_label = f"{y_feature}"
+    else:
+        color_label = f"{color_feature}"
 
-    plt.colorbar(scatter, label=f"{y_feature}")
-    plt.xlabel(f"{x_feature}")
-    plt.ylabel(f"{y_feature}")
+    # 检查颜色特征是否存在
+    if color_feature not in data.columns:
+        raise ValueError(f"颜色特征 '{color_feature}' 不存在于数据中")
 
+    # 获取颜色数据
+    color_data = data[color_feature]
+
+    if discrete_colors:
+        # 离散颜色模式（适用于聚类标签）
+        unique_values = sorted(color_data.unique())
+        n_colors = len(unique_values)
+
+        # 获取颜色映射
+        if isinstance(colormap, str):
+            cmap = plt.cm.get_cmap(colormap)
+            colors = [cmap(i / max(1, n_colors - 1)) for i in range(n_colors)]
+        else:
+            colors = colormap
+
+        # 为每个类别单独绘制
+        for i, value in enumerate(unique_values):
+            mask = color_data == value
+            if mask.any():
+                # 确定标签
+                if color_labels and value in color_labels:
+                    label = color_labels[value]
+                else:
+                    label = f"{color_feature} = {value}"
+
+                plt.scatter(
+                    data.loc[mask, x_feature],
+                    data.loc[mask, y_feature],
+                    c=colors[i],
+                    s=point_size,
+                    alpha=alpha,
+                    edgecolors="black",
+                    linewidth=0.3,
+                    label=label,
+                )
+
+        # 添加图例
+        plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left", framealpha=0.9)
+
+    else:
+        # 连续颜色模式（原始模式）
+        scatter = plt.scatter(
+            data[x_feature],
+            data[y_feature],
+            c=color_data,
+            s=point_size,
+            alpha=alpha,
+            cmap=colormap,
+            edgecolors="black",
+            linewidth=0.3,
+        )
+
+        # 添加颜色条
+        cbar = plt.colorbar(scatter, label=color_label)
+        cbar.ax.tick_params(labelsize=10)
+
+    # 设置坐标轴标签
+    plt.xlabel(f"{x_feature}", fontsize=12)
+    plt.ylabel(f"{y_feature}", fontsize=12)
+
+    # 设置标题
     if title is None:
-        title = f"特征分布: {x_feature} vs {y_feature}"
-    plt.title(title)
+        if color_feature == y_feature:
+            title = f"特征分布: {x_feature} vs {y_feature}"
+        else:
+            title = f"特征分布: {x_feature} vs {y_feature} (色标: {color_feature})"
+    plt.title(title, fontsize=14)
+
+    # 添加网格
     plt.grid(True, alpha=0.3)
 
     # 添加统计信息
@@ -303,13 +373,31 @@ def visualize_feature_distribution(
     stats_text += f"{y_feature}范围: {data[y_feature].min():.2f} - {data[y_feature].max():.2f}\n"
     stats_text += f"{x_feature}范围: {data[x_feature].min():.2f} - {data[x_feature].max():.2f}"
 
+    if color_feature != y_feature:
+        if discrete_colors:
+            stats_text += f"\n{color_feature}类别: {len(color_data.unique())} 个"
+        else:
+            stats_text += f"\n{color_feature}范围: {color_data.min():.2f} - {color_data.max():.2f}"
+
+    # 根据是否有图例调整统计信息位置
+    if discrete_colors:
+        # 有图例时，将统计信息放在左上角
+        text_x, text_y = 0.02, 0.98
+        text_ha = "left"
+    else:
+        # 无图例时，将统计信息放在右上角
+        text_x, text_y = 0.98, 0.98
+        text_ha = "right"
+
     plt.text(
-        0.02,
-        0.98,
+        text_x,
+        text_y,
         stats_text,
         transform=plt.gca().transAxes,
         verticalalignment="top",
+        horizontalalignment=text_ha,
         bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+        fontsize=10,
     )
 
     plt.tight_layout()
@@ -326,7 +414,7 @@ def visualize_gmm_clustering(
     prefix="",
     well_data=None,
     target_column="Sand Thickness",
-    class_thresholds=[0.1, 10],
+    class_thresholds=[1, 13.75],
     point_size=30,
     well_size=100,
 ):
@@ -352,7 +440,7 @@ def visualize_gmm_clustering(
     n_clusters = len(clustering_results["cluster_counts"])
 
     # 文件名前缀
-    file_prefix = f"{prefix}_{n_clusters}_clusters_" if prefix else f"{n_clusters}_clusters_"
+    file_prefix = f"{n_clusters}_clusters_{prefix}_" if prefix else f"{n_clusters}_clusters_"
 
     # 创建图形
     plt.figure(figsize=(10, 12))
@@ -470,25 +558,24 @@ def visualize_gmm_clustering(
 
 
 def visualize_pca_clustering(
-    clustering_results,
-    pca_results,
+    features_pca,
+    cluster_labels,
     n_clusters,
     output_dir="output",
     prefix="",
     well_data=None,
     well_pca_features=None,
     target_column="Sand Thickness",
-    class_thresholds=[0.1, 10],
+    class_thresholds=[1, 13.75],
 ):
     """
     在PCA空间中可视化GMM聚类结果
 
     参数:
-        clustering_results (dict): perform_gmm_clustering函数的返回结果
-        pca_results (dict): perform_pca_analysis函数的返回结果
+        features_pca (ndarray): PCA降维后的特征，形状为(n_samples, n_components)
+        cluster_labels (ndarray): 聚类标签数组
         n_clusters (int): 聚类数量
         output_dir (str): 输出目录
-        prefix (str): 文件名前缀
         well_data (DataFrame): 井点数据
         well_pca_features (ndarray): 井点在PCA空间的坐标，如果为None则不显示井点
         target_column (str): 井点目标列
@@ -497,12 +584,9 @@ def visualize_pca_clustering(
     返回:
         None
     """
-    # 文件名前缀
-    file_prefix = f"{prefix}_{n_clusters}_clusters_" if prefix else f"{n_clusters}_clusters_"
 
-    # 获取PCA降维后的特征和聚类标签
-    features_pca = pca_results["features_pca"]
-    cluster_labels = clustering_results["cluster_labels"]
+    # 文件名前缀
+    file_prefix = f"{n_clusters}_clusters_"
 
     # 仅当特征维度大于等于2时才可视化
     if features_pca.shape[1] >= 2:
@@ -578,7 +662,7 @@ def visualize_pca_clustering(
         plt.legend(loc="best")
         plt.grid(True, alpha=0.3)
         plt.savefig(
-            os.path.join(output_dir, f"{file_prefix}gmm_pca_projection.png"),
+            os.path.join(output_dir, f"{file_prefix}pca_gmm_projection.png"),
             dpi=300,
             bbox_inches="tight",
         )

@@ -175,19 +175,21 @@ class SigmoidModel:
         mud_range : tuple or None, default=None
             手动指定泥岩虚拟点范围 (start, end)
             例如: (-2, 0) 表示在PC1值-2到0之间添加泥岩虚拟点
+            如果指定，则只添加泥岩虚拟点，不自动添加砂岩虚拟点
         sand_range : tuple or None, default=None
             手动指定砂岩虚拟点范围 (start, end)
             例如: (2, 4) 表示在PC1值2到4之间添加砂岩虚拟点
+            如果指定，则只添加砂岩虚拟点，不自动添加泥岩虚拟点
         n_points : int, default=20
             每个区间生成的虚拟点数量
         noise_factor : float, default=0.1
             噪音因子，用于为虚拟点添加随机变化
         auto_detect : bool, default=True
-            是否自动检测PC值与地质类型的关系
+            是否自动检测PC值与地质类型的关系（仅在全自动模式下使用）
         primary_feature : str or None, default=None
             用于添加虚拟点的主要特征，如果为None则使用第一个特征
         placement_strategy : str, default="conservative"
-            自动放置策略（仅在未手动指定范围时生效）:
+            自动放置策略（仅在全自动模式下使用）:
             - "conservative": 在数据范围内侧保守放置（推荐）
             - "extended": 在数据范围外侧延伸放置
 
@@ -200,15 +202,18 @@ class SigmoidModel:
 
         Examples:
         ---------
-        # 手动指定泥岩区间
+        # 只设置泥岩虚拟点
         data, relationship = model.add_virtual_points_smart(mud_range=(-5, 0), n_points=10)
 
-        # 手动指定砂岩和泥岩区间
+        # 只设置砂岩虚拟点
+        data, relationship = model.add_virtual_points_smart(sand_range=(2, 5), n_points=10)
+
+        # 手动设置砂岩和泥岩区间
         data, relationship = model.add_virtual_points_smart(
             mud_range=(-2, 0), sand_range=(2, 5), n_points=10
         )
 
-        # 使用保守的自动策略
+        # 全自动模式（两种都会设置）
         data, relationship = model.add_virtual_points_smart(
             placement_strategy="conservative", n_points=15
         )
@@ -217,20 +222,13 @@ class SigmoidModel:
         if primary_feature is None:
             primary_feature = self.feature_columns[0]
 
-        # 自动检测PC值与地质类型的关系
-        if auto_detect:
-            pc_geology_relationship = self.auto_detect_pc_geology_relationship(primary_feature)
-        else:
-            # 使用默认关系
-            pc_geology_relationship = {"low_pc_type": "mud", "high_pc_type": "sand", "relationship_type": "default"}
-            print(f"使用默认PC值关系：低PC值=泥岩，高PC值=砂岩")
-
         feature_min = self.data[primary_feature].min()
         feature_max = self.data[primary_feature].max()
         feature_range = feature_max - feature_min
         max_target = self.data[self.target_column].max()
 
         virtual_data = []
+        pc_geology_relationship = None
 
         print(f"虚拟点生成配置:")
         print(f"  主要特征: {primary_feature}")
@@ -238,52 +236,36 @@ class SigmoidModel:
         print(f"  每个区间点数: {n_points}")
         print(f"  噪音因子: {noise_factor}")
 
-        # === 处理泥岩虚拟点 ===
-        if mud_range is not None:
-            # 手动指定泥岩区间
-            print(f"  手动设置泥岩虚拟点范围: {mud_range}")
-            mud_start, mud_end = mud_range
+        # 判断是否为全自动模式（两个区间都未手动指定）
+        is_full_auto = (mud_range is None) and (sand_range is None)
 
-            # 生成泥岩虚拟点
-            mud_x_values = np.linspace(mud_start, mud_end, n_points)
-            for x_val in mud_x_values:
-                virtual_point = {col: 0 for col in self.feature_columns}
-                virtual_point[primary_feature] = x_val
-                virtual_point[self.target_column] = abs(np.random.normal(0, noise_factor))
-                virtual_point["is_virtual"] = True
-                virtual_point["virtual_type"] = "mud"
-                virtual_data.append(virtual_point)
+        if is_full_auto:
+            # 全自动模式：自动检测关系并设置两种虚拟点
+            if auto_detect:
+                pc_geology_relationship = self.auto_detect_pc_geology_relationship(primary_feature)
+            else:
+                pc_geology_relationship = {"low_pc_type": "mud", "high_pc_type": "sand", "relationship_type": "default"}
+                print(f"使用默认PC值关系：低PC值=泥岩，高PC值=砂岩")
 
-        else:
-            # 自动策略：根据PC-地质关系自动设置泥岩区间
+            print(f"  模式: 全自动模式")
+            print(f"  放置策略: {placement_strategy}")
+
+            # 自动设置泥岩虚拟点
             if placement_strategy == "conservative":
-                # 保守策略：在数据范围内侧放置
-                margin = feature_range * 0.15  # 15%的内缩边距
-
+                margin = feature_range * 0.15
                 if pc_geology_relationship["low_pc_type"] == "mud":
-                    # 低PC值对应泥岩：在最小值右侧设置泥岩虚拟点
-                    mud_start = feature_min
-                    mud_end = feature_min + margin
+                    mud_start, mud_end = feature_min, feature_min + margin
                     print(f"  自动设置泥岩虚拟点（低PC=泥岩）: [{mud_start:.2f}, {mud_end:.2f}]")
                 else:
-                    # 高PC值对应泥岩：在最大值左侧设置泥岩虚拟点
-                    mud_start = feature_max - margin
-                    mud_end = feature_max
+                    mud_start, mud_end = feature_max - margin, feature_max
                     print(f"  自动设置泥岩虚拟点（高PC=泥岩）: [{mud_start:.2f}, {mud_end:.2f}]")
-
-            else:  # extended strategy
-                # 延伸策略：在数据范围外侧放置
-                expansion = feature_range * 0.2  # 20%的外延
-
+            else:  # extended
+                expansion = feature_range * 0.2
                 if pc_geology_relationship["low_pc_type"] == "mud":
-                    # 低PC值对应泥岩：在最小值左侧延伸
-                    mud_start = feature_min - expansion
-                    mud_end = feature_min
+                    mud_start, mud_end = feature_min - expansion, feature_min
                     print(f"  自动设置泥岩虚拟点（低PC=泥岩，延伸）: [{mud_start:.2f}, {mud_end:.2f}]")
                 else:
-                    # 高PC值对应泥岩：在最大值右侧延伸
-                    mud_start = feature_max
-                    mud_end = feature_max + expansion
+                    mud_start, mud_end = feature_max, feature_max + expansion
                     print(f"  自动设置泥岩虚拟点（高PC=泥岩，延伸）: [{mud_start:.2f}, {mud_end:.2f}]")
 
             # 生成泥岩虚拟点
@@ -296,11 +278,23 @@ class SigmoidModel:
                 virtual_point["virtual_type"] = "mud"
                 virtual_data.append(virtual_point)
 
-        # === 处理砂岩虚拟点 ===
-        if sand_range is not None:
-            # 手动指定砂岩区间
-            print(f"  手动设置砂岩虚拟点范围: {sand_range}")
-            sand_start, sand_end = sand_range
+            # 自动设置砂岩虚拟点
+            if placement_strategy == "conservative":
+                margin = feature_range * 0.15
+                if pc_geology_relationship["high_pc_type"] == "sand":
+                    sand_start, sand_end = feature_max - margin, feature_max
+                    print(f"  自动设置砂岩虚拟点（高PC=砂岩）: [{sand_start:.2f}, {sand_end:.2f}]")
+                else:
+                    sand_start, sand_end = feature_min, feature_min + margin
+                    print(f"  自动设置砂岩虚拟点（低PC=砂岩）: [{sand_start:.2f}, {sand_end:.2f}]")
+            else:  # extended
+                expansion = feature_range * 0.2
+                if pc_geology_relationship["high_pc_type"] == "sand":
+                    sand_start, sand_end = feature_max, feature_max + expansion
+                    print(f"  自动设置砂岩虚拟点（高PC=砂岩，延伸）: [{sand_start:.2f}, {sand_end:.2f}]")
+                else:
+                    sand_start, sand_end = feature_min - expansion, feature_min
+                    print(f"  自动设置砂岩虚拟点（低PC=砂岩，延伸）: [{sand_start:.2f}, {sand_end:.2f}]")
 
             # 生成砂岩虚拟点
             sand_x_values = np.linspace(sand_start, sand_end, n_points)
@@ -313,46 +307,43 @@ class SigmoidModel:
                 virtual_data.append(virtual_point)
 
         else:
-            # 自动策略：根据PC-地质关系自动设置砂岩区间
-            if placement_strategy == "conservative":
-                # 保守策略：在数据范围内侧放置
-                margin = feature_range * 0.15  # 15%的内缩边距
+            # 手动模式：只设置指定的虚拟点类型
+            print(f"  模式: 手动模式")
 
-                if pc_geology_relationship["high_pc_type"] == "sand":
-                    # 高PC值对应砂岩：在最大值左侧设置砂岩虚拟点
-                    sand_start = feature_max - margin
-                    sand_end = feature_max
-                    print(f"  自动设置砂岩虚拟点（高PC=砂岩）: [{sand_start:.2f}, {sand_end:.2f}]")
-                else:
-                    # 低PC值对应砂岩：在最小值右侧设置砂岩虚拟点
-                    sand_start = feature_min
-                    sand_end = feature_min + margin
-                    print(f"  自动设置砂岩虚拟点（低PC=砂岩）: [{sand_start:.2f}, {sand_end:.2f}]")
+            # 设置一个简单的关系信息用于返回
+            pc_geology_relationship = {"relationship_type": "manual"}
 
-            else:  # extended strategy
-                # 延伸策略：在数据范围外侧放置
-                expansion = feature_range * 0.2  # 20%的外延
+            # === 处理泥岩虚拟点（仅在手动指定时） ===
+            if mud_range is not None:
+                print(f"  手动设置泥岩虚拟点范围: {mud_range}")
+                mud_start, mud_end = mud_range
 
-                if pc_geology_relationship["high_pc_type"] == "sand":
-                    # 高PC值对应砂岩：在最大值右侧延伸
-                    sand_start = feature_max
-                    sand_end = feature_max + expansion
-                    print(f"  自动设置砂岩虚拟点（高PC=砂岩，延伸）: [{sand_start:.2f}, {sand_end:.2f}]")
-                else:
-                    # 低PC值对应砂岩：在最小值左侧延伸
-                    sand_start = feature_min - expansion
-                    sand_end = feature_min
-                    print(f"  自动设置砂岩虚拟点（低PC=砂岩，延伸）: [{sand_start:.2f}, {sand_end:.2f}]")
+                # 生成泥岩虚拟点
+                mud_x_values = np.linspace(mud_start, mud_end, n_points)
+                for x_val in mud_x_values:
+                    virtual_point = {col: 0 for col in self.feature_columns}
+                    virtual_point[primary_feature] = x_val
+                    virtual_point[self.target_column] = abs(np.random.normal(0, noise_factor))
+                    virtual_point["is_virtual"] = True
+                    virtual_point["virtual_type"] = "mud"
+                    virtual_data.append(virtual_point)
 
-            # 生成砂岩虚拟点
-            sand_x_values = np.linspace(sand_start, sand_end, n_points)
-            for x_val in sand_x_values:
-                virtual_point = {col: 0 for col in self.feature_columns}
-                virtual_point[primary_feature] = x_val
-                virtual_point[self.target_column] = max_target + abs(np.random.normal(max_target * 0.1, noise_factor))
-                virtual_point["is_virtual"] = True
-                virtual_point["virtual_type"] = "sand"
-                virtual_data.append(virtual_point)
+            # === 处理砂岩虚拟点（仅在手动指定时） ===
+            if sand_range is not None:
+                print(f"  手动设置砂岩虚拟点范围: {sand_range}")
+                sand_start, sand_end = sand_range
+
+                # 生成砂岩虚拟点
+                sand_x_values = np.linspace(sand_start, sand_end, n_points)
+                for x_val in sand_x_values:
+                    virtual_point = {col: 0 for col in self.feature_columns}
+                    virtual_point[primary_feature] = x_val
+                    virtual_point[self.target_column] = max_target + abs(
+                        np.random.normal(max_target * 0.1, noise_factor)
+                    )
+                    virtual_point["is_virtual"] = True
+                    virtual_point["virtual_type"] = "sand"
+                    virtual_data.append(virtual_point)
 
         # 合并数据
         enhanced_data = self.data.copy()
@@ -369,6 +360,8 @@ class SigmoidModel:
             sand_count = sum(1 for vp in virtual_data if vp["virtual_type"] == "sand")
             print(f"    - 泥岩虚拟点: {mud_count}")
             print(f"    - 砂岩虚拟点: {sand_count}")
+        else:
+            print(f"  未添加任何虚拟点")
 
         return enhanced_data, pc_geology_relationship
 
@@ -475,14 +468,10 @@ class SigmoidModel:
 
         # 添加虚拟点
         if virtual_points_config:
-            if virtual_points_config.get("smart", False):
-                # 使用智能模式
-                config = virtual_points_config.copy()
-                config.pop("smart")  # 移除smart标志
-                working_data, pc_relationship = self.add_virtual_points_smart(**config)
-            else:
-                # 使用传统模式
-                working_data = self.add_virtual_points(**virtual_points_config)
+            # 统一使用智能模式（向后兼容）
+            config = virtual_points_config.copy()
+            config.pop("smart", None)  # 移除smart标志（如果存在）
+            working_data, pc_relationship = self.add_virtual_points_smart(**config)
 
         # 保存当前工作数据
         self.current_data = working_data

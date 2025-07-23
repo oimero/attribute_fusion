@@ -32,7 +32,7 @@ def perform_pca_analysis(
     print("======== PCA降维分析开始 ========")
     print(f"数据集大小: {data.shape}")
 
-    # 预处理特征 - 修改这里：接收3个返回值
+    # 预处理特征
     features, feature_stats, processing_report = preprocess_features(
         data, attribute_columns, missing_values=missing_values, verbose=False
     )
