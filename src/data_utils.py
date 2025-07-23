@@ -1095,6 +1095,7 @@ def filter_anomalous_attributes(
     return good_attrs, anomalous_attrs, comparison_df
 
 
+# deprecated
 def export_to_petrel_format(
     prediction_results,
     coords_columns=["X", "Y", "Z"],
