@@ -202,7 +202,6 @@ def visualize_pca_clustering(
     cluster_labels,
     n_clusters,
     output_dir="output",
-    prefix="",
     well_data=None,
     well_pca_features=None,
     target_column="Sand Thickness",
@@ -243,7 +242,7 @@ def visualize_pca_clustering(
                 features_pca[mask, 0],
                 features_pca[mask, 1],
                 label=f"聚类 {cluster}",
-                s=30,
+                s=10,
                 alpha=0.5,
             )
 

@@ -355,8 +355,6 @@ def visualize_gmm_clustering(
             label=f"聚类 {cluster}",
             s=point_size,
             alpha=0.85,
-            edgecolors="black",
-            linewidth=0.3,
         )
 
     ax1.set_title(f"传统聚类可视化 (聚类数={n_clusters})", fontsize=14)
@@ -389,8 +387,6 @@ def visualize_gmm_clustering(
             c=mixed_colors,
             s=point_size,
             alpha=0.85,
-            edgecolors="black",
-            linewidth=0.3,
         )
 
         # 添加概率信息到标题
@@ -411,8 +407,6 @@ def visualize_gmm_clustering(
                 label=f"聚类 {cluster}",
                 s=point_size,
                 alpha=0.85,
-                edgecolors="black",
-                linewidth=0.3,
             )
         ax2.set_title(f"标准聚类可视化 (聚类数={n_clusters})", fontsize=14)
 
@@ -503,8 +497,6 @@ def visualize_gmm_clustering(
             s=point_size,
             cmap="RdYlBu_r",  # 红色表示低确定性，蓝色表示高确定性
             alpha=0.8,
-            edgecolors="black",
-            linewidth=0.3,
         )
         plt.colorbar(scatter, label="最大聚类概率")
         plt.title("聚类确定性 (最大概率)", fontsize=12)
@@ -523,8 +515,6 @@ def visualize_gmm_clustering(
             s=point_size,
             cmap="viridis",
             alpha=0.8,
-            edgecolors="black",
-            linewidth=0.3,
         )
         plt.colorbar(scatter, label="概率分布熵")
         plt.title("聚类不确定性 (熵)", fontsize=12)
