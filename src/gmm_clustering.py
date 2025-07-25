@@ -18,7 +18,7 @@ def evaluate_gmm_clusters(features_for_clustering, max_clusters=10, output_dir="
     返回:
         dict: 包含评估结果的字典
     """
-    print("======== GMM聚类数评估开始（带肘部法则）========")
+    print("======== GMM聚类数评估开始（使用肘部法则）========")
 
     print(f"特征数据形状: {features_for_clustering.shape}")
     print(f"评估聚类数范围: 1 到 {max_clusters}")
