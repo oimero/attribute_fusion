@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
+from scipy.stats import t
 from sklearn.metrics import r2_score
 
 
@@ -39,18 +40,15 @@ class SigmoidModel:
             特征列名列表，通常为PCA组件['PC1', 'PC2', ...]
         target_column : str
             目标变量列名，如'Sand Thickness'
-
-        Raises:
-        -------
-        ValueError
-            当数据中缺少必要列时抛出异常
         """
         self.data = data.copy()
         self.feature_columns = feature_columns
         self.target_column = target_column
         self.fit_params = None
+        self.covariance_matrix = None  # 新增：存储协方差矩阵
+        self.residual_std = None  # 新增：存储残差标准差
         self.r2_score = None
-        self.current_data = None  # 添加虚拟点后的数据
+        self.current_data = None
 
         # 检查必要的列是否存在
         missing_cols = [col for col in feature_columns + [target_column] if col not in data.columns]
@@ -77,10 +75,6 @@ class SigmoidModel:
         --------
         array-like
             Sigmoid函数值，范围在[0, L]之间
-
-        Notes:
-        ------
-        函数形式: f(x) = L / (1 + exp(-k * (x - x0)))
         """
         return L / (1 + np.exp(-k * (x - x0)))
 
@@ -430,9 +424,7 @@ class SigmoidModel:
         feature_weights : list or None, optional
             特征权重，与use_features对应
         virtual_points_config : dict or None, optional
-            虚拟点配置，支持两种模式：
-            1. 智能模式: {'smart': True, 'n_points': int, 'noise_factor': float}
-            2. 传统模式: {'x_mud': value, 'x_sand': value, 'n_points': int}
+            虚拟点配置
         bounds : tuple or None, optional
             参数边界 ((L_min, k_min, x0_min), (L_max, k_max, x0_max))
         initial_guess : tuple or None, optional
@@ -443,34 +435,15 @@ class SigmoidModel:
         Returns:
         --------
         dict
-            拟合结果字典，包含以下键：
-            - 'success': bool, 拟合是否成功
-            - 'params': dict, 拟合参数 {'L': float, 'k': float, 'x0': float}
-            - 'param_errors': dict, 参数标准误差
-            - 'r2_score': float, 决定系数
-            - 'X': np.array, 输入特征
-            - 'y': np.array, 目标值
-            - 'y_pred': np.array, 预测值
-            - 'use_features': list, 使用的特征
-            - 'feature_weights': list, 特征权重
-            如果失败，包含 'error': str
-
-        Notes:
-        ------
-        拟合流程：
-        1. 数据准备和虚拟点添加
-        2. 特征组合和参数设置
-        3. 非线性最小二乘拟合
-        4. 结果评估和误差计算
+            拟合结果字典，包含置信带相关参数
         """
         # 准备数据
         working_data = self.data.copy()
 
         # 添加虚拟点
         if virtual_points_config:
-            # 统一使用智能模式（向后兼容）
             config = virtual_points_config.copy()
-            config.pop("smart", None)  # 移除smart标志（如果存在）
+            config.pop("smart", None)
             working_data, pc_relationship = self.add_virtual_points_smart(**config)
 
         # 保存当前工作数据
@@ -487,8 +460,8 @@ class SigmoidModel:
 
         if bounds is None:
             bounds = (
-                [y_max * 0.5, -10, x_min - x_range],  # 下界
-                [y_max * 2.0, 10, x_max + x_range],  # 上界
+                [y_max * 0.5, -10, x_min - x_range],
+                [y_max * 2.0, 10, x_max + x_range],
             )
 
         if initial_guess is None:
@@ -496,7 +469,7 @@ class SigmoidModel:
 
         try:
             # 拟合sigmoid函数
-            self.fit_params, covariance = curve_fit(
+            self.fit_params, self.covariance_matrix = curve_fit(
                 self.sigmoid, X, y, p0=initial_guess, bounds=bounds, maxfev=max_iterations
             )
 
@@ -504,14 +477,20 @@ class SigmoidModel:
             y_pred = self.sigmoid(X, *self.fit_params)
             self.r2_score = r2_score(y, y_pred)
 
+            # 计算残差标准差
+            residuals = y - y_pred
+            self.residual_std = np.std(residuals, ddof=len(self.fit_params))
+
             # 计算参数标准误差
-            param_errors = np.sqrt(np.diag(covariance))
+            param_errors = np.sqrt(np.diag(self.covariance_matrix))
 
             return {
                 "success": True,
                 "params": dict(zip(["L", "k", "x0"], self.fit_params)),
                 "param_errors": dict(zip(["L_err", "k_err", "x0_err"], param_errors)),
                 "r2_score": self.r2_score,
+                "covariance_matrix": self.covariance_matrix,  # 新增
+                "residual_std": self.residual_std,  # 新增
                 "X": X,
                 "y": y,
                 "y_pred": y_pred,
@@ -692,5 +671,299 @@ class SigmoidModel:
 
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
+        return fig
+
+    def get_confidence_band(self, x_values, confidence_level=0.95):
+        """
+        计算给定x值的Sigmoid曲线的置信带
+
+        Parameters:
+        -----------
+        x_values : np.array
+            需要计算置信带的x值数组
+        confidence_level : float, default=0.95
+            置信水平 (例如 0.95 表示 95%)
+
+        Returns:
+        --------
+        tuple
+            (lower_bound, upper_bound, margin_of_error)
+            包含置信带下界、上界和误差幅度的元组
+
+        Raises:
+        -------
+        ValueError
+            当模型尚未拟合或缺少协方差矩阵时抛出异常
+        """
+        if self.fit_params is None or self.covariance_matrix is None:
+            raise ValueError("模型尚未拟合或缺少协方差矩阵，请先调用fit方法")
+
+        L, k, x0 = self.fit_params
+        n = len(self.current_data)  # 样本数量
+        p = len(self.fit_params)  # 参数数量
+        dof = max(1, n - p)  # 自由度
+
+        # t分布的临界值
+        alpha = 1.0 - confidence_level
+        t_val = t.ppf(1.0 - alpha / 2.0, dof)
+
+        lower_bound, upper_bound, margin_errors = [], [], []
+
+        for x in x_values:
+            # 计算雅可比矩阵 (Sigmoid函数对各参数的偏导数)
+            exp_term = np.exp(-k * (x - x0))
+            denom = 1.0 + exp_term
+
+            # 对L的偏导数
+            dL = 1.0 / denom
+
+            # 对k的偏导数
+            dk = L * (x - x0) * exp_term / (denom**2)
+
+            # 对x0的偏导数
+            dx0 = L * k * exp_term / (denom**2)
+
+            jacobian = np.array([dL, dk, dx0])
+
+            # 计算标准误差: se = sqrt(J * C * J^T)
+            se = np.sqrt(np.dot(jacobian, np.dot(self.covariance_matrix, jacobian.T)))
+
+            # 计算置信区间
+            margin_of_error = t_val * se
+            y_pred = self.sigmoid(x, *self.fit_params)
+
+            lower_bound.append(y_pred - margin_of_error)
+            upper_bound.append(y_pred + margin_of_error)
+            margin_errors.append(margin_of_error)
+
+        return np.array(lower_bound), np.array(upper_bound), np.array(margin_errors)
+
+    def get_prediction_interval(self, x_values, confidence_level=0.95):
+        """
+        计算预测区间（比置信带更宽，包含数据噪声的不确定性）
+
+        Parameters:
+        -----------
+        x_values : np.array
+            需要计算预测区间的x值数组
+        confidence_level : float, default=0.95
+            置信水平
+
+        Returns:
+        --------
+        tuple
+            (lower_bound, upper_bound, margin_of_error)
+            包含预测区间下界、上界和误差幅度的元组
+        """
+        if self.residual_std is None:
+            raise ValueError("模型尚未拟合或缺少残差标准差信息")
+
+        # 先获取置信带
+        conf_lower, conf_upper, conf_margin = self.get_confidence_band(x_values, confidence_level)
+
+        # 添加残差标准差的贡献
+        n = len(self.current_data)
+        p = len(self.fit_params)
+        dof = max(1, n - p)
+        alpha = 1.0 - confidence_level
+        t_val = t.ppf(1.0 - alpha / 2.0, dof)
+
+        # 预测区间的额外不确定性
+        additional_error = t_val * self.residual_std
+
+        pred_lower = conf_lower - additional_error
+        pred_upper = conf_upper + additional_error
+        pred_margin = conf_margin + additional_error
+
+        return pred_lower, pred_upper, pred_margin
+
+    def predict_with_uncertainty(self, new_data, use_features=None, feature_weights=None, confidence_level=0.95):
+        """
+        带不确定性的预测
+
+        Parameters:
+        -----------
+        new_data : pd.DataFrame or np.array
+            新的输入数据
+        use_features : list or None, optional
+            使用的特征列表
+        feature_weights : list or None, optional
+            特征权重
+        confidence_level : float, default=0.95
+            置信水平
+
+        Returns:
+        --------
+        dict
+            包含预测值、置信带和预测区间的字典
+        """
+        if self.fit_params is None:
+            raise ValueError("模型尚未拟合，请先调用fit方法")
+
+        if isinstance(new_data, pd.DataFrame):
+            X_new = self.prepare_features(new_data, use_features, feature_weights)
+        else:
+            X_new = new_data
+
+        # 基本预测
+        y_pred = self.sigmoid(X_new, *self.fit_params)
+
+        # 置信带
+        conf_lower, conf_upper, conf_margin = self.get_confidence_band(X_new, confidence_level)
+
+        # 预测区间
+        pred_lower, pred_upper, pred_margin = self.get_prediction_interval(X_new, confidence_level)
+
+        return {
+            "predictions": y_pred,
+            "confidence_lower": conf_lower,
+            "confidence_upper": conf_upper,
+            "confidence_margin": conf_margin,
+            "prediction_lower": pred_lower,
+            "prediction_upper": pred_upper,
+            "prediction_margin": pred_margin,
+            "confidence_level": confidence_level,
+        }
+
+    def visualize_predict(
+        self,
+        true_values,
+        predicted_values,
+        feature_values=None,
+        use_features=None,
+        feature_weights=None,
+        show_confidence_band=True,
+        confidence_level=0.95,
+        figsize=(15, 6),
+        save_path=None,
+    ):
+        """
+        可视化预测结果对比
+
+        专门用于预测模式的可视化，右图显示置信区间。
+
+        Parameters:
+        -----------
+        true_values : array-like
+            真实值数组
+        predicted_values : array-like
+            预测值数组
+        feature_values : array-like, optional
+            特征值数组（用于计算置信区间）
+        use_features : list, optional
+            使用的特征列表
+        feature_weights : list, optional
+            特征权重
+        show_confidence_band : bool, default=True
+            是否在右图显示置信区间
+        confidence_level : float, default=0.95
+            置信水平
+        figsize : tuple, default=(15, 6)
+            图形大小
+        save_path : str, optional
+            保存路径
+
+        Returns:
+        --------
+        matplotlib.figure.Figure
+            生成的图形对象
+        """
+        if self.fit_params is None:
+            print("WARNING: 模型尚未拟合，无法显示置信带")
+            show_confidence_band = False
+
+        # 转换为numpy数组
+        true_values = np.array(true_values)
+        predicted_values = np.array(predicted_values)
+
+        if feature_values is not None:
+            feature_values = np.array(feature_values)
+
+        # 创建图像
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+
+        # 左图：预测 vs 真实值散点图（简洁版，不显示置信带）
+        ax1.scatter(true_values, predicted_values, alpha=0.7, s=80, edgecolors="black", label="井点预测")
+
+        # 添加1:1参考线
+        min_val = min(true_values.min(), predicted_values.min())
+        max_val = max(true_values.max(), predicted_values.max())
+        ax1.plot([min_val, max_val], [min_val, max_val], "r--", alpha=0.8, linewidth=2, label="1:1参考线")
+
+        ax1.set_xlabel("真实砂厚 (m)")
+        ax1.set_ylabel("预测砂厚 (m)")
+        ax1.set_title("预测 vs 真实砂厚")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # 右图：残差散点图（带置信区间）
+        residuals = true_values - predicted_values
+        ax2.scatter(predicted_values, residuals, alpha=0.7, s=60, edgecolors="black", label="残差点")
+        ax2.axhline(y=0, color="red", linestyle="--", linewidth=2, label="零残差线")
+
+        # 在右图显示置信区间
+        confidence_info = ""
+        if show_confidence_band and feature_values is not None:
+            try:
+                # 计算置信带
+                conf_lower, conf_upper, conf_margin = self.get_confidence_band(feature_values, confidence_level)
+
+                # 在残差图中显示置信区间
+                residual_ci = np.mean(conf_margin)
+                ax2.axhline(
+                    y=residual_ci,
+                    color="orange",
+                    linestyle=":",
+                    alpha=0.7,
+                    linewidth=2,
+                    label=f"±{confidence_level * 100:.0f}%置信区间",
+                )
+                ax2.axhline(y=-residual_ci, color="orange", linestyle=":", alpha=0.7, linewidth=2)
+
+                # 填充置信区间
+                xlim = ax2.get_xlim()
+                ax2.fill_between(xlim, -residual_ci, residual_ci, alpha=0.1, color="orange")
+                ax2.set_xlim(xlim)  # 恢复x轴范围
+
+                # 计算残差在置信区间内的比例
+                within_ci = np.abs(residuals) <= residual_ci
+                within_ci_ratio = np.mean(within_ci) * 100
+
+                confidence_info = f"\n置信区间分析 ({confidence_level * 100:.0f}%):\n"
+                confidence_info += f"  平均置信区间: ±{residual_ci:.3f} m\n"
+                confidence_info += f"  残差在置信区间内: {within_ci_ratio:.1f}%"
+
+            except Exception as e:
+                print(f"WARNING: 置信区间计算失败: {e}")
+                confidence_info = "\n置信区间计算失败"
+
+        ax2.set_xlabel("预测值 (m)")
+        ax2.set_ylabel("残差 (真实 - 预测) (m)")
+        ax2.set_title("残差分析")
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
+        # 计算并打印统计信息
+        correlation = np.corrcoef(true_values, predicted_values)[0, 1]
+        rmse = np.sqrt(np.mean(residuals**2))
+        mae = np.mean(np.abs(residuals))
+
+        print(f"\n=== 预测结果摘要 ===")
+        print(f"预测性能:")
+        print(f"  预测-实际相关系数: {correlation:.3f}")
+        print(f"  RMSE: {rmse:.3f} m")
+        print(f"  MAE: {mae:.3f} m")
+        print(f"  残差统计: 均值={np.mean(residuals):.3f}, 标准差={np.std(residuals):.3f}")
+        print(confidence_info)
+        print(f"数据统计:")
+        print(f"  井点砂厚范围: {true_values.min():.2f} - {true_values.max():.2f} m")
+        print(f"  预测砂厚范围: {predicted_values.min():.2f} - {predicted_values.max():.2f} m")
+        print(f"  井点数量: {len(true_values)}")
 
         return fig
