@@ -31,6 +31,8 @@ from math import comb
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_squared_error, r2_score
@@ -65,6 +67,7 @@ CFG = {
     # -- SVR 组合选择
     "n_select_groups": 3,            # 每次选几组特征
     "top_models": 5,                 # 集成模型数
+    "grid_search_n_jobs": 1,         # Windows 下避免 joblib 子进程启动/权限问题
     # -- SVR 参数网格
     "param_grid": [
         {"C": [0.01, 0.1, 1], "gamma": ["scale", 0.001, 0.01, 0.1],
@@ -210,6 +213,77 @@ def dynamic_data_augmentation(X_real, y_real, X_pseudo, y_pseudo,
     for src in set(augmentation_sources):
         print(f"  {src}: {augmentation_sources.count(src)}")
     return X_augmented, y_augmented, augmentation_sources
+
+
+def plot_svr_model_selection_summary(
+    model_results, selected_count, save_path, display_count=10
+):
+    """绘制按 CV R^2 排名的 SVR 模型筛选摘要。"""
+    ranked_models = model_results[: min(display_count, len(model_results))]
+    if not ranked_models:
+        raise ValueError("没有成功训练的 SVR 模型，无法绘制筛选摘要")
+
+    selected_count = min(selected_count, len(ranked_models))
+    scores = np.array([result["cv_r2"] for result in ranked_models])
+    labels = [
+        f"M{rank + 1:02d} | " + " + ".join(result["selected_features"])
+        for rank, result in enumerate(ranked_models)
+    ]
+    colors = [
+        "#4C78A8" if rank < selected_count else "#BAB0AC"
+        for rank in range(len(ranked_models))
+    ]
+
+    fig, ax = plt.subplots(figsize=(16, 9))
+    y_positions = np.arange(len(ranked_models))
+    bars = ax.barh(y_positions, scores, color=colors, edgecolor="white", height=0.72)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(labels, fontsize=10)
+    ax.invert_yaxis()
+    ax.axvline(0, color="black", linewidth=0.8)
+
+    score_span = max(scores.max() - scores.min(), 0.1)
+    label_offset = score_span * 0.02
+    for bar, score in zip(bars, scores):
+        if score >= 0:
+            x_value, alignment = score + label_offset, "left"
+        else:
+            x_value, alignment = score - label_offset, "right"
+        ax.text(
+            x_value, bar.get_y() + bar.get_height() / 2,
+            f"{score:.3f}", va="center", ha=alignment, fontsize=10,
+        )
+
+    if selected_count:
+        cutoff_score = scores[selected_count - 1]
+        ax.axvline(
+            cutoff_score, color="#E45756", linestyle="--", linewidth=1.8,
+            label=f"Top-{selected_count} 截止 CV R^2={cutoff_score:.3f}",
+        )
+        if selected_count < len(ranked_models):
+            ax.axhline(selected_count - 0.5, color="#E45756", linestyle=":", linewidth=1.5)
+
+    ax.set_xlabel("交叉验证 CV R^2", fontsize=12)
+    ax.set_ylabel("模型排名与特征组合", fontsize=12)
+    ax.set_title(
+        f"SVR 模型筛选摘要（前 {len(ranked_models)} 名）", fontsize=16
+    )
+    ax.grid(axis="x", alpha=0.25)
+    legend_handles = [
+        Patch(facecolor="#4C78A8", label=f"入选集成 Top-{selected_count}"),
+        Patch(facecolor="#BAB0AC", label="未入选模型"),
+    ]
+    if selected_count:
+        legend_handles.append(
+            Line2D(
+                [0], [0], color="#E45756", linestyle="--",
+                label=f"第 {selected_count} 名分数截止线",
+            )
+        )
+    ax.legend(handles=legend_handles, loc="lower right", fontsize=10)
+    plt.subplots_adjust(left=0.42, right=0.96, top=0.92, bottom=0.10)
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 
 def main():
@@ -375,7 +449,7 @@ def main():
             cv_folds = max(2, min(3, len(X_train) // 3))
             grid_search = GridSearchCV(
                 SVR(), param_grid, cv=cv_folds, scoring="r2",
-                n_jobs=-1, return_train_score=True,
+                n_jobs=CFG["grid_search_n_jobs"], return_train_score=True,
             )
             grid_search.fit(X_train_scaled, y_combined, sample_weight=sample_weights)
 
@@ -426,6 +500,17 @@ def main():
         print(f"  特征: {r['selected_features']}")
         print(f"  参数: {r['best_params']}")
         print(f"  CV R^2={r['cv_r2']:.4f}, Train R^2={r['train_r2']:.4f}")
+
+    model_selection_figure_path = os.path.join(
+        figures_dir, "svr_model_selection_summary.png"
+    )
+    plot_svr_model_selection_summary(
+        model_results,
+        selected_count=len(top_models),
+        save_path=model_selection_figure_path,
+        display_count=10,
+    )
+    print(f"SVR 模型筛选摘要图已保存: {model_selection_figure_path}")
 
     seismic_data = data_seismic_attr_processed.copy()
     seismic_features = seismic_data[common_features].fillna(seismic_data[common_features].mean())

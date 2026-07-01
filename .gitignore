@@ -1,5 +1,6 @@
 .vscode/*
 data/*
+tmp/*
 */output/*
 AGENTS.md
 *.ps1

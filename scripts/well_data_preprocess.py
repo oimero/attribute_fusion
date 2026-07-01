@@ -19,6 +19,9 @@ import os
 import sys
 from datetime import datetime
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -48,6 +51,9 @@ CFG = {
 }
 # ================================================================
 
+plt.rcParams["font.family"] = "SimHei"
+plt.rcParams["axes.unicode_minus"] = False
+
 
 def setup_output_dir(script_name):
     """创建带时间戳的输出目录"""
@@ -56,6 +62,67 @@ def setup_output_dir(script_name):
     output_dir = os.path.join(output_root, f"{script_name}_{timestamp}")
     os.makedirs(output_dir, exist_ok=True)
     return output_dir
+
+
+def plot_sand_thickness_cleaning_stages(
+    stages, sand_thickness_column, missing_sentinel, save_path
+):
+    """绘制原始、删缺失、去重和去离群值四阶段的砂厚分布。"""
+    prepared = []
+    all_valid_values = []
+    for title, data in stages:
+        raw_values = pd.to_numeric(data[sand_thickness_column], errors="coerce")
+        valid_values = raw_values[
+            raw_values.notna() & (raw_values != missing_sentinel)
+        ].astype(float)
+        prepared.append((title, len(data), valid_values))
+        all_valid_values.append(valid_values.to_numpy())
+
+    non_empty_values = [values for values in all_valid_values if len(values)]
+    if not non_empty_values:
+        raise ValueError("四个清洗阶段均没有可绘制的有效砂厚数据")
+    combined = np.concatenate(non_empty_values)
+
+    value_min, value_max = combined.min(), combined.max()
+    if np.isclose(value_min, value_max):
+        bins = np.linspace(value_min - 0.5, value_max + 0.5, 11)
+    else:
+        bins = np.linspace(value_min, value_max, 25)
+
+    colors = ["#4C78A8", "#72B7B2", "#F2CF5B", "#E45756"]
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True)
+    for ax, (title, total_count, values), color in zip(
+        axes.flatten(), prepared, colors
+    ):
+        ax.hist(values, bins=bins, color=color, alpha=0.8, edgecolor="white")
+        if len(values):
+            mean_value = values.mean()
+            median_value = values.median()
+            ax.axvline(mean_value, color="black", linestyle="--", linewidth=1.5,
+                       label=f"均值 {mean_value:.2f}m")
+            ax.axvline(median_value, color="#7A1FA2", linestyle=":", linewidth=1.5,
+                       label=f"中位数 {median_value:.2f}m")
+            stats_text = (
+                f"总记录: {total_count}\n有效砂厚: {len(values)}\n"
+                f"标准差: {values.std():.2f}m"
+            )
+            ax.legend(fontsize=9)
+        else:
+            stats_text = f"总记录: {total_count}\n有效砂厚: 0"
+        ax.text(
+            0.97, 0.95, stats_text, transform=ax.transAxes,
+            ha="right", va="top", fontsize=10,
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85},
+        )
+        ax.set_title(title, fontsize=14)
+        ax.set_xlabel("砂厚 (m)")
+        ax.set_ylabel("样本数")
+        ax.grid(axis="y", alpha=0.25)
+
+    fig.suptitle("砂厚数据清洗各阶段分布变化", fontsize=17, y=1.01)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 
 def main():
@@ -73,7 +140,10 @@ def main():
 
     # 创建输出目录
     output_dir = setup_output_dir("well_data_preprocess")
+    figures_dir = os.path.join(output_dir, "figures")
+    os.makedirs(figures_dir, exist_ok=True)
     print(f"输出目录: {output_dir}")
+    print(f"图件目录: {figures_dir}")
 
     # ==================== 1. 读取数据 ====================
     print("\n" + "=" * 60)
@@ -98,6 +168,7 @@ def main():
     print(f"井名列:     {well_column}")
     print(f"砂厚列:     {sand_thickness_column}")
     print(f"重复计数列: {count_column}")
+    cleaning_stages = [("原始数据", data_well.copy())]
 
     # ==================== 3. 删除指定层位和井点 ====================
     print("\n" + "=" * 60)
@@ -141,6 +212,7 @@ def main():
         print(f"已删除 {missing_count} 行，剩余 {len(data_filtered)} 行")
     else:
         print("未发现砂厚值为 -999 的数据")
+    cleaning_stages.append(("删除缺失值后", data_filtered.copy()))
 
     # ==================== 5. 处理重复数据 ====================
     print("\n" + "=" * 60)
@@ -170,6 +242,7 @@ def main():
     else:
         data_processed = data_filtered
         print("没有发现重复计数 > 1 的数据")
+    cleaning_stages.append(("去除重复记录后", data_processed.copy()))
 
     # ==================== 6. 离群值处理 ====================
     print("\n" + "=" * 60)
@@ -201,6 +274,18 @@ def main():
         print(f"\n已删除 {outliers_count} 个离群值，剩余 {len(data_processed)} 行")
     else:
         print("\n未发现离群值")
+
+    cleaning_stages.append(("剔除离群值后", data_processed.copy()))
+    cleaning_figure_path = os.path.join(
+        figures_dir, "sand_thickness_cleaning_stages.png"
+    )
+    plot_sand_thickness_cleaning_stages(
+        cleaning_stages,
+        sand_thickness_column,
+        CFG["missing_sentinel"],
+        cleaning_figure_path,
+    )
+    print(f"砂厚清洗阶段图已保存: {cleaning_figure_path}")
 
     # ==================== 7. 最终统计 ====================
     print("\n" + "=" * 60)

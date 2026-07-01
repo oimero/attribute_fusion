@@ -223,6 +223,70 @@ def calculate_regression_metrics(true_values, predicted_values):
     }
 
 
+def plot_well_seismic_attribute_comparison(
+    seismic_data, well_data, attributes, good_attributes, save_path
+):
+    """按属性对比井点与地震体的概率密度分布及统计量。"""
+    n_columns = 3
+    n_rows = int(np.ceil(len(attributes) / n_columns))
+    fig, axes = plt.subplots(
+        n_rows, n_columns, figsize=(18, 5.5 * n_rows), squeeze=False
+    )
+
+    for ax, attribute in zip(axes.flatten(), attributes):
+        well_values = pd.to_numeric(well_data[attribute], errors="coerce").dropna()
+        seismic_values = pd.to_numeric(
+            seismic_data[attribute], errors="coerce"
+        ).dropna()
+        combined = np.concatenate([well_values.values, seismic_values.values])
+        if combined.size == 0:
+            ax.set_visible(False)
+            continue
+
+        value_min, value_max = combined.min(), combined.max()
+        if np.isclose(value_min, value_max):
+            bins = np.linspace(value_min - 0.5, value_max + 0.5, 16)
+        else:
+            bins = np.linspace(value_min, value_max, 26)
+
+        ax.hist(
+            seismic_values, bins=bins, density=True, color="#E45756",
+            alpha=0.55, label=f"地震体 (n={len(seismic_values)})",
+        )
+        ax.hist(
+            well_values, bins=bins, density=True, color="#4C78A8",
+            alpha=0.65, label=f"井点 (n={len(well_values)})",
+        )
+        ax.axvline(seismic_values.mean(), color="#B22222", linestyle="--", linewidth=1.3)
+        ax.axvline(well_values.mean(), color="#1F4E99", linestyle="--", linewidth=1.3)
+
+        status = "保留" if attribute in good_attributes else "剔除"
+        stats_text = (
+            f"井点: μ={well_values.mean():.2f}, σ={well_values.std():.2f}, "
+            f"范围=[{well_values.min():.2f}, {well_values.max():.2f}]\n"
+            f"地震: μ={seismic_values.mean():.2f}, σ={seismic_values.std():.2f}, "
+            f"范围=[{seismic_values.min():.2f}, {seismic_values.max():.2f}]"
+        )
+        ax.text(
+            0.02, 0.97, stats_text, transform=ax.transAxes,
+            ha="left", va="top", fontsize=9,
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85},
+        )
+        ax.set_title(f"{attribute}（{status}）", fontsize=13)
+        ax.set_xlabel("属性值")
+        ax.set_ylabel("概率密度")
+        ax.legend(loc="upper right", fontsize=9)
+        ax.grid(axis="y", alpha=0.2)
+
+    for ax in axes.flatten()[len(attributes):]:
+        ax.set_visible(False)
+
+    fig.suptitle("井点与地震体属性分布统计对比", fontsize=18, y=1.01)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main():
     args = parse_args()
     SURFACE_NAME = args.surface
@@ -353,6 +417,17 @@ def main():
         verbose=True,
     )
     print(f"\n保留 {len(good_attributes)} 个质量良好的属性")
+    attribute_comparison_path = os.path.join(
+        figures_dir, "well_seismic_attribute_comparison.png"
+    )
+    plot_well_seismic_attribute_comparison(
+        data_seismic_attr_filtered,
+        data_well_attr_filtered,
+        attribute_names_processed,
+        good_attributes,
+        attribute_comparison_path,
+    )
+    print(f"井-震属性统计对比图已保存: {attribute_comparison_path}")
 
     # ================================================================
     # 步骤 7: PCA 降维
