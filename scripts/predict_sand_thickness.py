@@ -119,7 +119,7 @@ def parse_args():
     p.add_argument("--seismic", required=True, help="地震属性 Surface 文件路径")
     p.add_argument("--wells", required=True, help="井点 xlsx 文件路径")
     p.add_argument("--pseudo-wells", required=True, help="虚拟井 csv 文件路径")
-    p.add_argument("--surface", default="H6-2", help="目标层位名称")
+    p.add_argument("--surface", required=True, help="目标层位名称")
     p.add_argument("--corr-threshold", type=float, default=CFG["corr_threshold"], help="相关性分组阈值")
     p.add_argument("--top-models", type=int, default=CFG["top_models"], help="集成模型数量")
     return p.parse_args()

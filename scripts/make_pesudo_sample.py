@@ -1,5 +1,5 @@
 """
-PCA + Sigmoid 生成伪样本
+PCA + 三模型共识生成伪样本
 
 工作流：
   1. 加载地震属性数据和井点数据
@@ -10,8 +10,8 @@ PCA + Sigmoid 生成伪样本
   6. 筛选质量良好的属性（井-震统计对比）
   7. PCA 降维
   8. GMM 聚类
-  9. Sigmoid 拟合（含智能虚拟点）
-  10. 生成优化后的虚拟井
+  9. Ridge、Lasso、Sigmoid 拟合
+  10. 三模型共识筛选并生成优化后的虚拟井
 
 用法：
   python scripts/make_pesudo_sample.py \
@@ -32,6 +32,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.spatial.distance import cdist
+from sklearn.linear_model import Lasso, Ridge
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 warnings.filterwarnings("ignore")
 
@@ -80,6 +82,14 @@ CFG = {
         "initial_L_factor": 0.7,          # 初值 L = max_sand * factor
         "initial_k": 1.0,
         "max_iterations": 3000,
+    },
+    # -- Ridge / Lasso / Sigmoid 共识配置
+    "multi_model_fit": {
+        "ridge_alpha": 1.0,
+        "lasso_alpha": 0.1,
+        "lasso_max_iterations": 5000,
+        "random_seed": 42,
+        "max_prediction_spread": 5.0,
     },
     # -- 等间距采样网格
     "sample_grid": {
@@ -130,10 +140,10 @@ def setup_output_dir(script_name):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="PCA + Sigmoid 生成伪样本")
+    p = argparse.ArgumentParser(description="PCA + 三模型共识生成伪样本")
     p.add_argument("--seismic", required=True, help="地震属性 Surface 文件路径")
     p.add_argument("--wells", required=True, help="井点 xlsx 文件路径")
-    p.add_argument("--surface", default="H6-2", help="目标层位名称")
+    p.add_argument("--surface", required=True, help="目标层位名称")
     p.add_argument("--expansion-factor", type=float, default=1.5)
     p.add_argument("--pca-variance", type=float, default=0.9)
     p.add_argument("--n-clusters", type=int, default=2)
@@ -141,6 +151,76 @@ def parse_args():
     p.add_argument("--sample-cols", type=int, default=40)
     p.add_argument("--max-samples-per-bin", type=int, default=30)
     return p.parse_args()
+
+
+MODEL_PREDICTION_COLUMNS = [
+    "Ridge_Prediction",
+    "Lasso_Prediction",
+    "Sigmoid_Prediction",
+]
+
+
+def calculate_model_consensus(
+    ridge_predictions,
+    lasso_predictions,
+    sigmoid_predictions,
+    max_prediction_spread,
+):
+    """截断三模型负预测，并计算逐点均值、极差和共识标记。"""
+    prediction_matrix = np.column_stack(
+        [ridge_predictions, lasso_predictions, sigmoid_predictions]
+    ).astype(float)
+    if prediction_matrix.ndim != 2 or prediction_matrix.shape[1] != 3:
+        raise ValueError("三模型预测必须能组成 n×3 数组")
+    if not np.isfinite(prediction_matrix).all():
+        raise ValueError("三模型预测包含 NaN 或无穷值，无法生成共识伪样本")
+
+    prediction_matrix = np.maximum(prediction_matrix, 0.0)
+    result = pd.DataFrame(prediction_matrix, columns=MODEL_PREDICTION_COLUMNS)
+    result["Prediction_Spread"] = prediction_matrix.max(axis=1) - prediction_matrix.min(axis=1)
+    result["Predicted_Sand_Thickness"] = prediction_matrix.mean(axis=1)
+    result["Model_Agreement"] = result["Prediction_Spread"] <= max_prediction_spread
+    return result
+
+
+def predict_with_three_models(
+    pca_features,
+    pc_columns,
+    ridge_model,
+    lasso_model,
+    sigmoid_model,
+    sigmoid_fit,
+    max_prediction_spread,
+):
+    """使用三个已拟合模型预测，并返回统一的共识结果。"""
+    pca_features = np.asarray(pca_features)
+    if pca_features.ndim != 2 or pca_features.shape[1] < len(pc_columns):
+        raise ValueError("PCA 特征维度不足，无法进行三模型预测")
+
+    linear_features = pca_features[:, : len(pc_columns)]
+    sigmoid_features = pd.DataFrame(linear_features, columns=pc_columns)
+    ridge_predictions = ridge_model.predict(linear_features)
+    lasso_predictions = lasso_model.predict(linear_features)
+    sigmoid_predictions = sigmoid_model.predict(
+        sigmoid_features,
+        use_features=sigmoid_fit["use_features"],
+        feature_weights=sigmoid_fit.get("feature_weights"),
+    )
+    return calculate_model_consensus(
+        ridge_predictions,
+        lasso_predictions,
+        sigmoid_predictions,
+        max_prediction_spread,
+    )
+
+
+def calculate_regression_metrics(true_values, predicted_values):
+    """计算统一口径的真实井拟合指标。"""
+    return {
+        "r2_score": r2_score(true_values, predicted_values),
+        "rmse": np.sqrt(mean_squared_error(true_values, predicted_values)),
+        "mae": mean_absolute_error(true_values, predicted_values),
+    }
 
 
 def main():
@@ -325,38 +405,54 @@ def main():
     )
 
     # ================================================================
-    # 步骤 9: Sigmoid 拟合
+    # 步骤 9: 三模型拟合
     # ================================================================
     print("\n" + "=" * 60)
-    print("步骤 9: Sigmoid 拟合")
+    print("步骤 9: Ridge、Lasso、Sigmoid 拟合")
     print("=" * 60)
 
-    sigmoid_data = pd.DataFrame()
+    modeling_data = pd.DataFrame()
     n_components = min(3, well_pca_features.shape[1])
     for i in range(n_components):
-        sigmoid_data[f"PC{i + 1}"] = well_pca_features[:, i]
-    sigmoid_data["Sand Thickness"] = data_well_purpose_surface_filtered["Sand Thickness"].values
-    print(f"Sigmoid 建模数据形状: {sigmoid_data.shape}")
+        modeling_data[f"PC{i + 1}"] = well_pca_features[:, i]
+    modeling_data["Sand Thickness"] = data_well_purpose_surface_filtered["Sand Thickness"].values
+    print(f"三模型建模数据形状: {modeling_data.shape}")
 
-    pc_columns = [col for col in sigmoid_data.columns if col.startswith("PC")]
+    pc_columns = [col for col in modeling_data.columns if col.startswith("PC")]
+    target_values = modeling_data["Sand Thickness"].values
+    linear_features = modeling_data[pc_columns].values
+    mf = CFG["multi_model_fit"]
+
+    try:
+        ridge_model = Ridge(
+            alpha=mf["ridge_alpha"], random_state=mf["random_seed"]
+        ).fit(linear_features, target_values)
+        lasso_model = Lasso(
+            alpha=mf["lasso_alpha"],
+            random_state=mf["random_seed"],
+            max_iter=mf["lasso_max_iterations"],
+        ).fit(linear_features, target_values)
+    except Exception as exc:
+        raise RuntimeError(f"Ridge/Lasso 拟合失败: {exc}") from exc
+
     sigmoid_model = SigmoidModel(
-        data=sigmoid_data, feature_columns=pc_columns, target_column="Sand Thickness"
+        data=modeling_data, feature_columns=pc_columns, target_column="Sand Thickness"
     )
 
     # 可视化原始样本分布
     visualize_feature_distribution(
-        data=sigmoid_data, x_feature="PC1", y_feature="Sand Thickness",
+        data=modeling_data, x_feature="PC1", y_feature="Sand Thickness",
         figsize=(10, 6), point_size=100, alpha=0.7, colormap="viridis",
         title="样本分布: PC1 vs Sand Thickness",
         save_path=os.path.join(figures_dir, "sigmoid_original_distribution.png"),
     )
 
-    pc1_min, pc1_max = sigmoid_data["PC1"].min(), sigmoid_data["PC1"].max()
-    pc1_median = sigmoid_data["PC1"].median()
-    sand_thickness_max = sigmoid_data["Sand Thickness"].max()
+    pc1_min, pc1_max = modeling_data["PC1"].min(), modeling_data["PC1"].max()
+    pc1_median = modeling_data["PC1"].median()
+    sand_thickness_max = modeling_data["Sand Thickness"].max()
 
     print(f"PC1 范围: {pc1_min:.2f} ~ {pc1_max:.2f}, 中位数: {pc1_median:.2f}")
-    print(f"砂厚范围: {sigmoid_data['Sand Thickness'].min():.2f} ~ {sand_thickness_max:.2f} m")
+    print(f"砂厚范围: {modeling_data['Sand Thickness'].min():.2f} ~ {sand_thickness_max:.2f} m")
 
     virtual_config = CFG["virtual_points"]
 
@@ -379,90 +475,137 @@ def main():
         max_iterations=sf["max_iterations"],
     )
 
+    if not fit_result["success"]:
+        raise RuntimeError(f"Sigmoid 拟合失败: {fit_result.get('error', 'Unknown')}")
+
     best_fit = fit_result
-    best_model_name = "单特征(PC1)"
+    print("\n=== 三模型拟合成功! ===")
+    sigmoid_model.visualize_fit(
+        fit_result, figsize=(15, 6),
+        save_path=os.path.join(figures_dir, "sigmoid_fit_result.png"),
+    )
+    params = fit_result["params"]
+    param_errors = fit_result["param_errors"]
+    for p in ["L", "k", "x0"]:
+        print(f"  Sigmoid {p}: {params[p]:.4f} ± {param_errors[p + '_err']:.4f}")
 
-    if fit_result["success"]:
-        print("\n=== 拟合成功! ===")
-        sigmoid_model.visualize_fit(
-            fit_result, figsize=(15, 6),
-            save_path=os.path.join(figures_dir, "sigmoid_fit_result.png"),
+    # 真实井统一口径预测与拟合指标
+    well_predictions = predict_with_three_models(
+        well_pca_features[:, :n_components], pc_columns,
+        ridge_model, lasso_model, sigmoid_model, best_fit,
+        mf["max_prediction_spread"],
+    )
+    model_metrics = {}
+    for prediction_column in MODEL_PREDICTION_COLUMNS:
+        model_name = prediction_column.replace("_Prediction", "")
+        model_metrics[model_name] = calculate_regression_metrics(
+            target_values, well_predictions[prediction_column].values
         )
-        params = fit_result["params"]
-        param_errors = fit_result["param_errors"]
-        for p in ["L", "k", "x0"]:
-            print(f"  {p}: {params[p]:.4f} ± {param_errors[p + '_err']:.4f}")
-        print(f"  R^2: {fit_result['r2_score']:.4f}")
+        metrics = model_metrics[model_name]
+        print(
+            f"  {model_name}: R^2={metrics['r2_score']:.4f}, "
+            f"RMSE={metrics['rmse']:.3f} m, MAE={metrics['mae']:.3f} m"
+        )
 
-        rmse = np.sqrt(np.mean((fit_result["y"] - fit_result["y_pred"]) ** 2))
-        mae = np.mean(np.abs(fit_result["y"] - fit_result["y_pred"]))
-        print(f"  RMSE: {rmse:.3f} m, MAE: {mae:.3f} m")
+    sigmoid_model.visualize_predict(
+        true_values=target_values,
+        predicted_values=well_predictions["Sigmoid_Prediction"].values,
+        feature_values=well_pca_features[:, 0],
+        show_confidence_band=True,
+        save_path=os.path.join(figures_dir, "sigmoid_prediction_detailed_analysis.png"),
+    )
 
-        # 保存模型摘要
-        fit_summary = {
-            "model_type": "sigmoid", "best_model": best_model_name,
+    # 全工区三模型预测与共识诊断
+    print("\n对全工区进行三模型砂厚预测...")
+    seismic_pca_features = pca_results["pca"].transform(pca_results["features_scaled"])
+    full_consensus = predict_with_three_models(
+        seismic_pca_features[:, :n_components], pc_columns,
+        ridge_model, lasso_model, sigmoid_model, best_fit,
+        mf["max_prediction_spread"],
+    )
+    prediction_results = pd.concat(
+        [
+            pca_results["coords_clean"].reset_index(drop=True),
+            full_consensus.reset_index(drop=True),
+        ],
+        axis=1,
+    )
+    prediction_results.to_csv(
+        os.path.join(data_tmp_dir, "predicted_sand_thickness.csv"), index=False
+    )
+
+    full_agreement_rate = full_consensus["Model_Agreement"].mean()
+    consensus_values = full_consensus["Predicted_Sand_Thickness"]
+    print(
+        f"  三模型均值范围: {consensus_values.min():.2f} ~ "
+        f"{consensus_values.max():.2f} m, 均值: {consensus_values.mean():.2f} m"
+    )
+    print(
+        f"  共识通过率（最大差 ≤ {mf['max_prediction_spread']:.1f}m）: "
+        f"{full_agreement_rate:.1%}"
+    )
+
+    summary_rows = [
+        {
+            "model": "Ridge",
+            "features_used": str(pc_columns),
+            "parameters": str({
+                "alpha": mf["ridge_alpha"],
+                "intercept": ridge_model.intercept_,
+                "coefficients": ridge_model.coef_.tolist(),
+            }),
+            "n_real_samples": len(modeling_data),
+            "n_virtual_points": 0,
+            **model_metrics["Ridge"],
+            "full_area_agreement_rate": full_agreement_rate,
+        },
+        {
+            "model": "Lasso",
+            "features_used": str(pc_columns),
+            "parameters": str({
+                "alpha": mf["lasso_alpha"],
+                "intercept": lasso_model.intercept_,
+                "coefficients": lasso_model.coef_.tolist(),
+            }),
+            "n_real_samples": len(modeling_data),
+            "n_virtual_points": 0,
+            **model_metrics["Lasso"],
+            "full_area_agreement_rate": full_agreement_rate,
+        },
+        {
+            "model": "Sigmoid",
             "features_used": str(best_fit["use_features"]),
-            "feature_weights": str(best_fit.get("feature_weights", "None")),
-            "n_samples": len(sigmoid_data),
-            "n_virtual_points": len(sigmoid_model.current_data) - len(sigmoid_data),
-            **best_fit["params"], **best_fit["param_errors"],
-            "r2_score": best_fit["r2_score"], "rmse": rmse, "mae": mae,
-        }
-        pd.DataFrame([fit_summary]).to_csv(
-            os.path.join(data_tmp_dir, "sigmoid_model_summary.csv"), index=False
-        )
+            "parameters": str(best_fit["params"]),
+            "n_real_samples": len(modeling_data),
+            "n_virtual_points": len(sigmoid_model.current_data) - len(modeling_data),
+            **model_metrics["Sigmoid"],
+            "full_area_agreement_rate": full_agreement_rate,
+        },
+    ]
+    pd.DataFrame(summary_rows).to_csv(
+        os.path.join(data_tmp_dir, "model_fit_summary.csv"), index=False
+    )
 
-        # 全工区预测
-        print("\n对全工区进行砂厚预测...")
-        seismic_pca_features = pca_results["pca"].transform(pca_results["features_scaled"])
-        seismic_pca_df = pd.DataFrame()
-        for i in range(len(best_fit["use_features"])):
-            seismic_pca_df[f"PC{i + 1}"] = seismic_pca_features[:, i]
-
-        predicted_thickness = sigmoid_model.predict(
-            seismic_pca_df, use_features=best_fit["use_features"],
-            feature_weights=best_fit.get("feature_weights"),
-        )
-
-        prediction_results = pca_results["coords_clean"].copy()
-        prediction_results["Predicted_Sand_Thickness"] = predicted_thickness
-        prediction_results["Model_Type"] = best_model_name
-        prediction_results["Model_R2"] = best_fit["r2_score"]
-        prediction_results.to_csv(os.path.join(data_tmp_dir, "predicted_sand_thickness.csv"), index=False)
-
-        print(f"  预测砂厚范围: {predicted_thickness.min():.2f} ~ {predicted_thickness.max():.2f} m")
-        print(f"  预测砂厚均值: {predicted_thickness.mean():.2f} m")
-
-        # 可视化预测结果
-        visualize_attribute_map(
-            data_points=prediction_results,
-            attribute_name="Predicted_Sand_Thickness",
-            attribute_label="预测砂厚 (m)",
-            real_wells=data_well_purpose_surface_filtered,
-            pseudo_wells=None, target_column="Sand Thickness",
-            output_dir=figures_dir, filename_prefix="sigmoid_prediction",
-            class_thresholds=CFG["class_thresholds"], figsize=(14, 10),
-            dpi=150, cmap="viridis", point_size=50, well_size=100,
-        )
-
-        # 井点预测 vs 真实值
-        well_pca_df = pd.DataFrame()
-        for i in range(len(best_fit["use_features"])):
-            well_pca_df[f"PC{i + 1}"] = well_pca_features[:, i]
-        well_predictions = sigmoid_model.predict(
-            well_pca_df, use_features=best_fit["use_features"],
-            feature_weights=best_fit.get("feature_weights"),
-        )
-        sigmoid_model.visualize_predict(
-            true_values=sigmoid_data["Sand Thickness"].values,
-            predicted_values=well_predictions,
-            feature_values=well_pca_features[:, 0],
-            show_confidence_band=True,
-            save_path=os.path.join(figures_dir, "sigmoid_prediction_detailed_analysis.png"),
-        )
-    else:
-        print(f"\n=== 拟合失败: {fit_result.get('error', 'Unknown')} ===")
-        return
+    visualize_attribute_map(
+        data_points=prediction_results,
+        attribute_name="Predicted_Sand_Thickness",
+        attribute_label="三模型平均预测砂厚 (m)",
+        real_wells=data_well_purpose_surface_filtered,
+        pseudo_wells=None, target_column="Sand Thickness",
+        output_dir=figures_dir, filename_prefix="multi_model_mean_prediction",
+        class_thresholds=CFG["class_thresholds"], figsize=(14, 10),
+        dpi=150, cmap="viridis", point_size=50, well_size=100,
+    )
+    visualize_attribute_map(
+        data_points=prediction_results,
+        attribute_name="Prediction_Spread",
+        attribute_label="三模型预测最大差 (m)",
+        real_wells=data_well_purpose_surface_filtered,
+        pseudo_wells=None, target_column="Sand Thickness",
+        output_dir=figures_dir, filename_prefix="multi_model_prediction_spread",
+        class_thresholds=CFG["class_thresholds"], figsize=(14, 10),
+        dpi=150, cmap="magma", point_size=50, well_size=100,
+    )
 
     # ================================================================
     # 步骤 10: 生成虚拟井
@@ -493,30 +636,27 @@ def main():
     plt.savefig(os.path.join(figures_dir, "real_wells_and_seismic_samples.png"),
                 dpi=150, bbox_inches="tight")
     plt.close()
-    seismic_samples.to_csv(os.path.join(data_tmp_dir, "seismic_samples.csv"), index=False)
-
     print(f"采样点数: {len(seismic_samples)}")
 
-    # Sigmoid 预测虚拟井砂厚
+    # 三模型预测虚拟井砂厚
     sample_features = seismic_samples[pca_results["features_clean"].columns].values
     sample_features_scaled = pca_results["scaler"].transform(sample_features)
     sample_pca_features = pca_results["pca"].transform(sample_features_scaled)
 
-    sample_pca_df = pd.DataFrame()
-    for i in range(len(best_fit["use_features"])):
-        sample_pca_df[f"PC{i + 1}"] = sample_pca_features[:, i]
-
-    predicted_sample_thickness = sigmoid_model.predict(
-        sample_pca_df, use_features=best_fit["use_features"],
-        feature_weights=best_fit.get("feature_weights"),
+    sample_consensus = predict_with_three_models(
+        sample_pca_features[:, :n_components], pc_columns,
+        ridge_model, lasso_model, sigmoid_model, best_fit,
+        mf["max_prediction_spread"],
     )
-    seismic_samples["Predicted_Sand_Thickness"] = predicted_sample_thickness
-    neg_count = (predicted_sample_thickness < 0).sum()
-    if neg_count > 0:
-        seismic_samples["Predicted_Sand_Thickness"] = seismic_samples["Predicted_Sand_Thickness"].clip(lower=0)
-        print(f"注意: {neg_count} 个负值预测已替换为 0")
+    seismic_samples = pd.concat(
+        [seismic_samples.reset_index(drop=True), sample_consensus.reset_index(drop=True)],
+        axis=1,
+    )
+    seismic_samples.to_csv(
+        os.path.join(data_tmp_dir, "seismic_samples.csv"), index=False
+    )
 
-    print(f"虚拟井砂厚: {seismic_samples['Predicted_Sand_Thickness'].min():.2f} ~ "
+    print(f"三模型共识均值: {seismic_samples['Predicted_Sand_Thickness'].min():.2f} ~ "
           f"{seismic_samples['Predicted_Sand_Thickness'].max():.2f} m, "
           f"均值: {seismic_samples['Predicted_Sand_Thickness'].mean():.2f} m")
 
@@ -527,9 +667,20 @@ def main():
     print("步骤 11: 虚拟井优化筛选")
     print("=" * 60)
 
-    pseudo_wells_data = seismic_samples.copy()
+    initial_pseudo_count = len(seismic_samples)
+    agreement_mask = seismic_samples["Model_Agreement"]
+    pseudo_wells_data = seismic_samples[agreement_mask].copy().reset_index(drop=True)
     real_wells_data = data_well_purpose_surface_filtered.copy()
-    print(f"初始虚拟井: {len(pseudo_wells_data)}")
+    rejected_by_agreement = initial_pseudo_count - len(pseudo_wells_data)
+    print(f"初始候选井: {initial_pseudo_count}")
+    print(
+        f"共识筛选（最大差 ≤ {mf['max_prediction_spread']:.1f}m）: "
+        f"排除 {rejected_by_agreement} 个点, 剩余 {len(pseudo_wells_data)}"
+    )
+    if pseudo_wells_data.empty:
+        raise RuntimeError(
+            "三模型共识筛选后没有候选井；不会自动放宽 max_prediction_spread"
+        )
 
     # 第一层：排除靠近真实井且砂厚差异大的点
     po = CFG["pseudo_optimize"]
@@ -551,6 +702,8 @@ def main():
                 exclude_mask[i] = True
     layer1 = pseudo_wells_data[~exclude_mask].copy().reset_index(drop=True)
     print(f"第一层: 排除 {(exclude_mask).sum()} 个点, 剩余 {len(layer1)}")
+    if layer1.empty:
+        raise RuntimeError("近井差异筛选后没有候选井，无法继续生成虚拟井")
 
     # 第二层：贪心距离选择
     min_pseudo_distance = po["min_pseudo_distance"]
@@ -580,11 +733,26 @@ def main():
             chosen = np.random.choice(bin_indices, max_samples_per_bin, replace=False).tolist()
         else:
             chosen = bin_indices
+            if len(bin_indices) < max_samples_per_bin:
+                print(
+                    f"  警告: 区间 {bin_labels[i]} 仅有 {len(bin_indices)} 个候选点，"
+                    "保持三模型共识门槛，不自动放宽"
+                )
         final_indices.extend(chosen)
         print(f"  区间 {bin_labels[i]}: {len(bin_indices)} -> {len(chosen)}")
 
     optimized_pseudo_wells = layer2.loc[final_indices].copy().reset_index(drop=True)
-    print(f"\n虚拟井优化结果: {len(pseudo_wells_data)} -> {len(layer1)} -> {len(layer2)} -> {len(optimized_pseudo_wells)}")
+    print(
+        f"\n虚拟井优化结果: {initial_pseudo_count} -> 共识 {len(pseudo_wells_data)} "
+        f"-> 近井 {len(layer1)} -> 空间 {len(layer2)} -> 最终 {len(optimized_pseudo_wells)}"
+    )
+    if optimized_pseudo_wells.empty:
+        raise RuntimeError("优化筛选后没有虚拟井，未生成空结果文件")
+
+    if not (
+        optimized_pseudo_wells["Prediction_Spread"] <= mf["max_prediction_spread"]
+    ).all():
+        raise RuntimeError("内部错误: 最终虚拟井中存在未通过三模型共识门槛的样本")
 
     # 保存最终虚拟井
     pseudo_output_path = os.path.join(output_dir, f"{SURFACE_NAME.replace('-', '_')}_optimized_pseudo_wells.csv")
@@ -604,22 +772,11 @@ def main():
     print("步骤 12: 最终可视化")
     print("=" * 60)
 
-    seismic_features_all = data_seismic_attr_filtered[pca_results["features_clean"].columns].values
-    seismic_features_all_scaled = pca_results["scaler"].transform(seismic_features_all)
-    seismic_pca_all = pca_results["pca"].transform(seismic_features_all_scaled)
-
-    seismic_pca_all_df = pd.DataFrame()
-    for i in range(len(best_fit["use_features"])):
-        seismic_pca_all_df[f"PC{i + 1}"] = seismic_pca_all[:, i]
-
-    seismic_pred = sigmoid_model.predict(
-        seismic_pca_all_df, use_features=best_fit["use_features"],
-        feature_weights=best_fit.get("feature_weights"),
-    )
-    seismic_pred = np.maximum(seismic_pred, 0)
-
     data_with_pred = data_seismic_attr_filtered.copy()
-    data_with_pred["Predicted_Sand_Thickness"] = seismic_pred
+    for column in MODEL_PREDICTION_COLUMNS + [
+        "Prediction_Spread", "Predicted_Sand_Thickness", "Model_Agreement"
+    ]:
+        data_with_pred[column] = prediction_results[column].values
 
     visualize_attribute_map(
         data_points=data_with_pred,
