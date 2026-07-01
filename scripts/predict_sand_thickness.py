@@ -43,6 +43,53 @@ warnings.filterwarnings("ignore")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
+# ================================================================
+# 配置参数
+# ================================================================
+CFG = {
+    # -- 地震属性预处理
+    "preprocess": {
+        "missing_values": [-999],
+        "missing_threshold": 0.6,
+        "outlier_method": "iqr",
+        "outlier_threshold": 2.0,
+        "outlier_treatment": "clip",
+    },
+    # -- 井点地震属性提取
+    "well_attr_extract": {
+        "max_distance": 50,
+        "num_points": 5,
+    },
+    # -- 特征相关性分组
+    "corr_threshold": 0.9,
+    # -- SVR 组合选择
+    "n_select_groups": 3,            # 每次选几组特征
+    "top_models": 5,                 # 集成模型数
+    # -- SVR 参数网格
+    "param_grid": [
+        {"C": [0.01, 0.1, 1], "gamma": ["scale", 0.001, 0.01, 0.1],
+         "epsilon": [0.1, 0.2, 0.5], "kernel": ["rbf"]},
+        {"C": [0.01, 0.1, 1, 10], "epsilon": [0.1, 0.2, 0.5], "kernel": ["linear"]},
+    ],
+    # -- 动态数据增强
+    "augmentation": {
+        "target_samples_per_bin": 10,
+        "noise_factor": 0.03,
+        "thickness_bins": [0, 1, 13.75, 27.5, np.inf],
+    },
+    # -- 样本权重
+    "sample_weights": {
+        "real": 5.0,
+        "real_augmented": 3.0,
+        "pseudo_sampled": 1.5,
+        "pseudo_original": 1.0,
+    },
+    # -- 可视化
+    "class_thresholds": [1.0, 13.75],
+    "vrange": (0, 20),
+}
+# ================================================================
+
 from src.data_utils import (
     extract_seismic_attributes_for_wells,
     identify_attributes,
@@ -73,16 +120,16 @@ def parse_args():
     p.add_argument("--wells", required=True, help="井点 xlsx 文件路径")
     p.add_argument("--pseudo-wells", required=True, help="虚拟井 csv 文件路径")
     p.add_argument("--surface", default="H6-2", help="目标层位名称")
-    p.add_argument("--corr-threshold", type=float, default=0.9, help="相关性分组阈值")
-    p.add_argument("--top-models", type=int, default=5, help="集成模型数量")
+    p.add_argument("--corr-threshold", type=float, default=CFG["corr_threshold"], help="相关性分组阈值")
+    p.add_argument("--top-models", type=int, default=CFG["top_models"], help="集成模型数量")
     return p.parse_args()
 
 
 def dynamic_data_augmentation(X_real, y_real, X_pseudo, y_pseudo,
-                              target_samples_per_bin=10, noise_factor=0.05):
+                              target_samples_per_bin=None, noise_factor=None):
     """动态数据增强：按砂厚区间均衡样本分布"""
     print("\n=== 动态数据增强策略 ===")
-    thickness_bins = [0, 1, 13.75, 27.5, np.inf]
+    thickness_bins = CFG["augmentation"]["thickness_bins"]
     bin_labels = ["0-1m", "1-13.75m", "13.75-27.5m", ">27.5m"]
 
     real_bin_counts, real_bin_masks = [], []
@@ -183,11 +230,12 @@ def main():
     data_seismic_attr = parse_petrel_file(args.seismic)
     attribute_names, _ = identify_attributes(args.seismic)
 
+    p = CFG["preprocess"]
     processed_features, stats, report = preprocess_features(
         data=data_seismic_attr, attribute_columns=attribute_names,
-        missing_values=[-999], missing_threshold=0.6,
-        outlier_method="iqr", outlier_threshold=2.0,
-        outlier_treatment="clip", verbose=True,
+        missing_values=p["missing_values"], missing_threshold=p["missing_threshold"],
+        outlier_method=p["outlier_method"], outlier_threshold=p["outlier_threshold"],
+        outlier_treatment=p["outlier_treatment"], verbose=True,
     )
     attribute_names_processed = list(processed_features.columns)
     data_seismic_attr_processed = data_seismic_attr[["X", "Y"]].copy()
@@ -210,10 +258,11 @@ def main():
     )
     print(f"层位 {SURFACE_NAME} 井点数量: {len(data_well_purpose_surface_position)}")
 
+    w = CFG["well_attr_extract"]
     well_attr = extract_seismic_attributes_for_wells(
         well_data=data_well_purpose_surface_position,
         seismic_data=data_seismic_attr_processed,
-        max_distance=50, num_points=5,
+        max_distance=w["max_distance"], num_points=w["num_points"],
     )
     well_attr.to_excel(os.path.join(data_tmp_dir, "wells_attr.xlsx"), index=False)
     print(f"井点地震属性提取完成，共 {len(well_attr)} 口井")
@@ -269,19 +318,22 @@ def main():
     X_pseudo = pseudo_wells[common_features].values
     y_pseudo = pseudo_wells[pseudo_thickness_col].values
 
+    a = CFG["augmentation"]
     X_real_aug, y_real_aug, aug_sources = dynamic_data_augmentation(
         X_real, y_real, X_pseudo, y_pseudo,
-        target_samples_per_bin=10, noise_factor=0.03,
+        target_samples_per_bin=a["target_samples_per_bin"],
+        noise_factor=a["noise_factor"],
     )
 
     X_combined = np.vstack([X_real_aug, X_pseudo])
     y_combined = np.concatenate([y_real_aug, y_pseudo])
 
+    sw = CFG["sample_weights"]
     sample_weights = np.concatenate([
-        np.ones(len(X_real)) * 5.0,
-        np.ones(aug_sources.count("real_augmented")) * 3.0,
-        np.ones(aug_sources.count("pseudo_sampled")) * 1.5,
-        np.ones(len(X_pseudo)) * 1.0,
+        np.ones(len(X_real)) * sw["real"],
+        np.ones(aug_sources.count("real_augmented")) * sw["real_augmented"],
+        np.ones(aug_sources.count("pseudo_sampled")) * sw["pseudo_sampled"],
+        np.ones(len(X_pseudo)) * sw["pseudo_original"],
     ])
     print(f"总训练样本: {len(X_combined)}, 目标范围: {y_combined.min():.2f} ~ {y_combined.max():.2f}")
 
@@ -292,15 +344,11 @@ def main():
     print("步骤 5: 遍历特征组合训练 SVR")
     print("=" * 60)
 
-    n_select = min(3, len(feature_groups))
+    n_select = min(CFG["n_select_groups"], len(feature_groups))
     all_combinations = list(combinations(range(len(feature_groups)), n_select))
     total_comb = len(all_combinations)
 
-    param_grid = [
-        {"C": [0.01, 0.1, 1], "gamma": ["scale", 0.001, 0.01, 0.1],
-         "epsilon": [0.1, 0.2, 0.5], "kernel": ["rbf"]},
-        {"C": [0.01, 0.1, 1, 10], "epsilon": [0.1, 0.2, 0.5], "kernel": ["linear"]},
-    ]
+    param_grid = CFG["param_grid"]
     print(f"总组合数: {total_comb}, 参数网格: RBF(36) + Linear(12) = 48 个模型/组合")
     print(f"预计训练: {total_comb} × 48 = {total_comb * 48} 个 SVR 模型")
 
@@ -460,9 +508,9 @@ def main():
 
     viz_args = dict(
         real_wells=well_attr, target_column="Sand Thickness",
-        output_dir=figures_dir, class_thresholds=[1.0, 13.75],
+        output_dir=figures_dir, class_thresholds=CFG["class_thresholds"],
         figsize=(14, 14), point_size=10, well_size=60,
-        vrange=(0, 20), cmap="viridis",
+        vrange=CFG["vrange"], cmap="viridis",
     )
     for i, r in enumerate(top_models):
         col = f"SVR_Model_{i + 1}_Prediction"

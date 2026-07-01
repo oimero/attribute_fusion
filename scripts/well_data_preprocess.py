@@ -26,6 +26,28 @@ import pandas as pd
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
+# ================================================================
+# 配置参数
+# ================================================================
+CFG = {
+    # 列索引（原始 xlsx 中的列位置）
+    "col_idx_surface": 9,          # 层位名列
+    "col_idx_well": 10,            # 井名列
+    "col_idx_sand_thickness": 27,  # 砂厚列
+    "col_idx_count": 28,           # 重复计数列
+    # 缺失值 / 重复 / 离群值
+    "missing_sentinel": -999,      # 缺失值标记
+    "duplicate_count_threshold": 1,  # 超过此计数值视为重复
+    "iqr_factor": 3.0,             # IQR 离群值倍数
+    # 删除配置
+    "horizons_to_delete": ["P0(H83D)"],
+    "wells_to_delete": [],
+    # 输入/输出
+    "input_sheet": "Sand Thickness",
+    "output_name": "well_horizon_processed.xlsx",
+}
+# ================================================================
+
 
 def setup_output_dir(script_name):
     """创建带时间戳的输出目录"""
@@ -38,27 +60,16 @@ def setup_output_dir(script_name):
 
 def main():
     parser = argparse.ArgumentParser(description="井点数据预处理")
-    parser.add_argument(
-        "--input",
-        default=os.path.join(PROJECT_ROOT, "data", "target", "well_horizon.xlsx"),
-        help="输入 xlsx 文件路径",
-    )
-    parser.add_argument("--sheet", default="Sand Thickness", help="Sheet 名称")
-    parser.add_argument(
-        "--horizons-to-delete", nargs="*", default=["P0(H83D)"], help="要删除的层位列表"
-    )
-    parser.add_argument(
-        "--wells-to-delete", nargs="*", default=[], help="要删除的井点列表"
-    )
-    parser.add_argument(
-        "--iqr-factor", type=float, default=3.0, help="IQR 离群值倍数（默认 3.0）"
-    )
-    parser.add_argument(
-        "--output-name",
-        default="well_horizon_processed.xlsx",
-        help="输出文件名",
-    )
+    parser.add_argument("--input", default=None, help="输入 xlsx 路径（默认 data/target/well_horizon.xlsx）")
+    parser.add_argument("--sheet", default=CFG["input_sheet"])
+    parser.add_argument("--horizons-to-delete", nargs="*", default=CFG["horizons_to_delete"])
+    parser.add_argument("--wells-to-delete", nargs="*", default=CFG["wells_to_delete"])
+    parser.add_argument("--iqr-factor", type=float, default=CFG["iqr_factor"])
+    parser.add_argument("--output-name", default=CFG["output_name"])
     args = parser.parse_args()
+
+    if args.input is None:
+        args.input = os.path.join(PROJECT_ROOT, "data", "target", "well_horizon.xlsx")
 
     # 创建输出目录
     output_dir = setup_output_dir("well_data_preprocess")
@@ -77,10 +88,10 @@ def main():
     print("步骤 2: 识别关键列")
     print("=" * 60)
     xyz_columns = data_well.columns[0:3].tolist()
-    surface_column = data_well.columns[9]
-    well_column = data_well.columns[10]
-    sand_thickness_column = data_well.columns[27]
-    count_column = data_well.columns[28]
+    surface_column = data_well.columns[CFG["col_idx_surface"]]
+    well_column = data_well.columns[CFG["col_idx_well"]]
+    sand_thickness_column = data_well.columns[CFG["col_idx_sand_thickness"]]
+    count_column = data_well.columns[CFG["col_idx_count"]]
 
     print(f"XYZ 坐标列: {xyz_columns}")
     print(f"层位名列:   {surface_column}")
@@ -117,7 +128,7 @@ def main():
     print("\n" + "=" * 60)
     print("步骤 4: 删除砂厚为 -999 的无效数据")
     print("=" * 60)
-    missing_mask = data_filtered[sand_thickness_column] == -999
+    missing_mask = data_filtered[sand_thickness_column] == CFG["missing_sentinel"]
     missing_count = missing_mask.sum()
 
     if missing_count > 0:
@@ -135,7 +146,7 @@ def main():
     print("\n" + "=" * 60)
     print("步骤 5: 处理重复井点数据")
     print("=" * 60)
-    duplicate_mask = data_filtered[count_column] > 1
+    duplicate_mask = data_filtered[count_column] > CFG["duplicate_count_threshold"]
     duplicate_count = duplicate_mask.sum()
 
     if duplicate_count > 0:

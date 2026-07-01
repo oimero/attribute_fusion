@@ -39,6 +39,66 @@ warnings.filterwarnings("ignore")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
+# ================================================================
+# 配置参数
+# ================================================================
+CFG = {
+    # -- 地震属性预处理
+    "preprocess": {
+        "missing_values": [-999],
+        "missing_threshold": 0.6,
+        "outlier_method": "iqr",
+        "outlier_threshold": 2.0,
+        "outlier_treatment": "clip",
+    },
+    # -- 井点地震属性提取
+    "well_attr_extract": {
+        "max_distance": 50,
+        "num_points": 10,
+    },
+    # -- 井-震属性质量筛选
+    "attr_quality": {
+        "ratio_threshold": 5.0,
+        "range_ratio_threshold": 10.0,
+        "std_ratio_threshold": 10.0,
+    },
+    # -- Sigmoid 虚拟点配置
+    "virtual_points": {
+        "placement_strategy": "conservative",
+        "n_points": 10,
+        "noise_factor": 0.05,
+        "auto_detect": True,
+    },
+    # -- Sigmoid 拟合边界/初值 (相对于数据范围的系数)
+    "sigmoid_fit": {
+        "use_features": ["PC1"],
+        "bounds_L_min_factor": 0.2,     # L 下界 = max_sand * factor
+        "bounds_L_max_factor": 3.0,     # L 上界 = max_sand * factor
+        "bounds_k_min": -10,
+        "bounds_k_max": 10,
+        "bounds_x0_margin_factor": 1.0,  # x0 边界 = data_range * factor
+        "initial_L_factor": 0.7,          # 初值 L = max_sand * factor
+        "initial_k": 1.0,
+        "max_iterations": 3000,
+    },
+    # -- 等间距采样网格
+    "sample_grid": {
+        "n_rows": 40,
+        "n_cols": 40,
+    },
+    # -- 虚拟井优化筛选
+    "pseudo_optimize": {
+        "proximity_radius": 200,        # 第一层：距真实井距离阈值 (m)
+        "max_thickness_diff": 5.0,      # 第一层：砂厚差异阈值 (m)
+        "min_pseudo_distance": 200,     # 第二层：虚拟井间最小距离 (m)
+        "thickness_bins": [0, 1, 13.75, np.inf],  # 第三层：砂厚区间
+        "max_samples_per_bin": 30,      # 第三层：每区间最大样本数
+    },
+    # -- 可视化
+    "class_thresholds": [1, 13.75],
+}
+# ================================================================
+
 from src.data_utils import (
     extract_seismic_attributes_for_wells,
     extract_uniform_seismic_samples,
@@ -152,11 +212,12 @@ def main():
     print("=" * 60)
 
     attribute_names, _ = identify_attributes(args.seismic)
+    p = CFG["preprocess"]
     processed_features, stats, report = preprocess_features(
         data=data_seismic_attr, attribute_columns=attribute_names,
-        missing_values=[-999], missing_threshold=0.6,
-        outlier_method="iqr", outlier_threshold=2.0,
-        outlier_treatment="clip", verbose=True,
+        missing_values=p["missing_values"], missing_threshold=p["missing_threshold"],
+        outlier_method=p["outlier_method"], outlier_threshold=p["outlier_threshold"],
+        outlier_treatment=p["outlier_treatment"], verbose=True,
     )
     attribute_names_processed = list(processed_features.columns)
     data_seismic_attr_processed = data_seismic_attr[["X", "Y"]].copy()
@@ -184,10 +245,11 @@ def main():
     print("步骤 5: 提取井点处地震属性")
     print("=" * 60)
 
+    w = CFG["well_attr_extract"]
     data_well_attr_filtered = extract_seismic_attributes_for_wells(
         well_data=data_well_purpose_surface_filtered,
         seismic_data=data_seismic_attr_processed,
-        max_distance=50, num_points=10,
+        max_distance=w["max_distance"], num_points=w["num_points"],
     )
     well_attr_path = os.path.join(data_tmp_dir, f"{SURFACE_NAME.replace('-', '_')}_wells_attr_filtered.xlsx")
     data_well_attr_filtered.to_excel(well_attr_path, index=False)
@@ -200,11 +262,14 @@ def main():
     print("步骤 6: 井-震统计对比，筛选质量良好的属性")
     print("=" * 60)
 
+    q = CFG["attr_quality"]
     good_attributes, anomalous_attributes, attribute_stats = filter_anomalous_attributes(
         seismic_data=data_seismic_attr_filtered,
         well_data=data_well_attr_filtered,
         common_attributes=attribute_names_processed,
-        ratio_threshold=5.0, range_ratio_threshold=10.0, std_ratio_threshold=10.0,
+        ratio_threshold=q["ratio_threshold"],
+        range_ratio_threshold=q["range_ratio_threshold"],
+        std_ratio_threshold=q["std_ratio_threshold"],
         verbose=True,
     )
     print(f"\n保留 {len(good_attributes)} 个质量良好的属性")
@@ -249,13 +314,13 @@ def main():
         n_clusters=best_n, output_dir=figures_dir,
         well_data=data_well_purpose_surface_filtered,
         well_pca_features=well_pca_features,
-        target_column="Sand Thickness", class_thresholds=[1, 13.75],
+        target_column="Sand Thickness", class_thresholds=CFG["class_thresholds"],
     )
 
     visualize_gmm_clustering(
         clustering_results=gmm_results, output_dir=figures_dir,
         prefix="pca", well_data=data_well_purpose_surface_filtered,
-        target_column="Sand Thickness", class_thresholds=[1, 13.75],
+        target_column="Sand Thickness", class_thresholds=CFG["class_thresholds"],
         point_size=10, well_size=50,
     )
 
@@ -293,20 +358,25 @@ def main():
     print(f"PC1 范围: {pc1_min:.2f} ~ {pc1_max:.2f}, 中位数: {pc1_median:.2f}")
     print(f"砂厚范围: {sigmoid_data['Sand Thickness'].min():.2f} ~ {sand_thickness_max:.2f} m")
 
-    virtual_config = {
-        "placement_strategy": "conservative",
-        "n_points": 10, "noise_factor": 0.05, "auto_detect": True,
-    }
+    virtual_config = CFG["virtual_points"]
+
+    sf = CFG["sigmoid_fit"]
+    bounds = (
+        [sand_thickness_max * sf["bounds_L_min_factor"],
+         sf["bounds_k_min"],
+         pc1_min - (pc1_max - pc1_min) * sf["bounds_x0_margin_factor"]],
+        [sand_thickness_max * sf["bounds_L_max_factor"],
+         sf["bounds_k_max"],
+         pc1_max + (pc1_max - pc1_min) * sf["bounds_x0_margin_factor"]],
+    )
+    initial_guess = [sand_thickness_max * sf["initial_L_factor"], sf["initial_k"], pc1_median]
 
     fit_result = sigmoid_model.fit(
-        use_features=["PC1"],
+        use_features=sf["use_features"],
         virtual_points_config=virtual_config,
-        bounds=(
-            [sand_thickness_max * 0.2, -10, pc1_min - (pc1_max - pc1_min)],
-            [sand_thickness_max * 3.0, 10, pc1_max + (pc1_max - pc1_min)],
-        ),
-        initial_guess=[sand_thickness_max * 0.7, 1.0, pc1_median],
-        max_iterations=3000,
+        bounds=bounds,
+        initial_guess=initial_guess,
+        max_iterations=sf["max_iterations"],
     )
 
     best_fit = fit_result
@@ -371,7 +441,7 @@ def main():
             real_wells=data_well_purpose_surface_filtered,
             pseudo_wells=None, target_column="Sand Thickness",
             output_dir=figures_dir, filename_prefix="sigmoid_prediction",
-            class_thresholds=[1, 13.75], figsize=(14, 10),
+            class_thresholds=CFG["class_thresholds"], figsize=(14, 10),
             dpi=150, cmap="viridis", point_size=50, well_size=100,
         )
 
@@ -462,7 +532,9 @@ def main():
     print(f"初始虚拟井: {len(pseudo_wells_data)}")
 
     # 第一层：排除靠近真实井且砂厚差异大的点
-    proximity_radius, max_thickness_diff = 200, 5.0
+    po = CFG["pseudo_optimize"]
+    proximity_radius = po["proximity_radius"]
+    max_thickness_diff = po["max_thickness_diff"]
     real_coords = real_wells_data[["X", "Y"]].values
     real_thickness = real_wells_data["Sand Thickness"].values
     pseudo_coords = pseudo_wells_data[["X", "Y"]].values
@@ -481,7 +553,7 @@ def main():
     print(f"第一层: 排除 {(exclude_mask).sum()} 个点, 剩余 {len(layer1)}")
 
     # 第二层：贪心距离选择
-    min_pseudo_distance = 200
+    min_pseudo_distance = po["min_pseudo_distance"]
     layer1_coords = layer1[["X", "Y"]].values
     pseudo_distances = cdist(layer1_coords, layer1_coords)
     thickness_order = np.argsort(layer1["Predicted_Sand_Thickness"].values)
@@ -494,9 +566,9 @@ def main():
     print(f"第二层: 选择 {len(layer2)} 个点")
 
     # 第三层：砂厚分布均衡
-    thickness_bins = [0, 1, 13.75, np.inf]
+    thickness_bins = po["thickness_bins"]
     bin_labels = ["0-1m", "1-13.75m", ">13.75m"]
-    max_samples_per_bin = args.max_samples_per_bin
+    max_samples_per_bin = args.max_samples_per_bin or po["max_samples_per_bin"]
 
     final_indices = []
     for i in range(len(thickness_bins) - 1):
@@ -557,7 +629,7 @@ def main():
         pseudo_wells=optimized_pseudo_wells,
         target_column="Sand Thickness", output_dir=figures_dir,
         filename_prefix="pseudo_wells_optimized",
-        class_thresholds=[1, 13.75], figsize=(10, 8),
+        class_thresholds=CFG["class_thresholds"], figsize=(10, 8),
         dpi=150, cmap="viridis", point_size=50, well_size=100,
     )
 
