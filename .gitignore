@@ -1,5 +1,4 @@
+.vscode/*
 data/*
-**/data_tmp/*
-**/*_output/*
-**/*_test/*
-src/__pycache__/*
+*.pyc
+*/output/*
